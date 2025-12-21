@@ -15,12 +15,8 @@ def build_intents() -> discord.Intents:
 
 class MyBot(commands.Bot):
     async def setup_hook(self) -> None:
-        # Cogs load
         for ext in COG_LIST:
             await self.load_extension(ext)
-
-        # スラッシュコマンド同期（グローバル）
-        # ※反映に時間がかかる場合があります
         await self.tree.sync()
 
 async def main():
