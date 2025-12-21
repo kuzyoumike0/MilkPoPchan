@@ -22,11 +22,9 @@ SAFE_MAX_BYTES = 8 * 1024 * 1024 - 200_000
 URL_RE = re.compile(r"(https?://[^\s]+)")
 
 USER_MENTION_RE = re.compile(r"<@!?(\d+)>")
-ROLE_MENTION_RE = re.compile(r"<@&(\d+)>")
-CHANNEL_MENTION_RE = re.compile(r"<#(\d+)>")
 
 # =====================
-# HTML生成
+# HTMLテンプレ
 # =====================
 def make_html_page(guild_name: str, channel_name: str, exported_at: str, messages_html: str) -> str:
     return f"""<!doctype html>
@@ -36,111 +34,110 @@ def make_html_page(guild_name: str, channel_name: str, exported_at: str, message
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>{html.escape(guild_name)} - #{html.escape(channel_name)}</title>
 <style>
-  :root {{
-    --bg: #313338;
-    --panel: #2b2d31;
-    --text: #dbdee1;
-    --muted: #949ba4;
-    --name: #f2f3f5;
-    --border: rgba(255,255,255,.06);
-    --link: #00a8fc;
+:root {{
+  --bg: #313338;
+  --panel: #2b2d31;
+  --text: #dbdee1;
+  --muted: #949ba4;
+  --name: #f2f3f5;
+  --border: rgba(255,255,255,.06);
+  --link: #00a8fc;
 
-    --mention-bg: rgba(88,101,242,.18);
-    --mention-fg: #c9d4ff;
+  --mention-bg: rgba(88,101,242,.18);
+  --mention-fg: #c9d4ff;
 
-    --ping-bg: rgba(250,166,26,.20);
-    --ping-fg: #ffd59a;
-  }}
+  --ping-bg: rgba(250,166,26,.20);
+  --ping-fg: #ffd59a;
+}}
 
-  body {{
-    margin: 0;
-    background: #1e1f22;
-    color: var(--text);
-    font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans JP",
-      "Hiragino Kaku Gothic ProN", "Yu Gothic", sans-serif;
-  }}
+body {{
+  margin: 0;
+  background: #1e1f22;
+  color: var(--text);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans JP",
+    "Hiragino Kaku Gothic ProN", "Yu Gothic", sans-serif;
+}}
 
-  .app {{ max-width: 1100px; margin: 0 auto; padding: 24px 12px; }}
+.app {{ max-width: 1100px; margin: 0 auto; padding: 24px 12px; }}
 
-  .header {{
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 14px 16px;
-    margin-bottom: 12px;
-  }}
+.header {{
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px 16px;
+  margin-bottom: 12px;
+}}
 
-  .title {{ font-size: 14px; color: var(--muted); }}
-  .title strong {{ color: var(--name); font-weight: 700; }}
-  .meta {{ font-size: 12px; margin-top: 6px; color: var(--muted); }}
+.title {{ font-size: 14px; color: var(--muted); }}
+.title strong {{ color: var(--name); font-weight: 700; }}
+.meta {{ font-size: 12px; margin-top: 6px; color: var(--muted); }}
 
-  .chat {{
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    overflow: hidden;
-  }}
+.chat {{
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}}
 
-  .msg {{
-    display: grid;
-    grid-template-columns: 44px 1fr;
-    gap: 12px;
-    padding: 10px 16px;
-    border-top: 1px solid var(--border);
-  }}
-  .msg:first-child {{ border-top: none; }}
+.msg {{
+  display: grid;
+  grid-template-columns: 44px 1fr;
+  gap: 12px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--border);
+}}
+.msg:first-child {{ border-top: none; }}
 
-  .avatar {{
-    width: 40px;
-    height: 40px;
-    border-radius: 999px;
-    object-fit: cover;
-    background: #111;
-    border: 1px solid var(--border);
-  }}
+.avatar {{
+  width: 40px;
+  height: 40px;
+  border-radius: 999px;
+  object-fit: cover;
+  border: 1px solid var(--border);
+}}
 
-  .line1 {{ display: flex; align-items: baseline; gap: 8px; }}
-  .author {{ color: var(--name); font-weight: 700; font-size: 14px; }}
-  .time {{ color: var(--muted); font-size: 12px; }}
+.author {{ color: var(--name); font-weight: 700; }}
+.time {{ color: var(--muted); font-size: 12px; margin-left: 6px; }}
 
-  .content {{
-    margin-top: 2px;
-    font-size: 14px;
-    line-height: 1.5;
-    white-space: pre-wrap;
-    word-break: break-word;
-  }}
+.content {{
+  margin-top: 4px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}}
 
-  a {{ color: var(--link); text-decoration: none; }}
-  a:hover {{ text-decoration: underline; }}
+a {{ color: var(--link); }}
 
-  .mention {{
-    background: var(--mention-bg);
-    color: var(--mention-fg);
-    padding: 0 6px;
-    border-radius: 6px;
-    font-weight: 600;
-  }}
+.mention {{
+  background: var(--mention-bg);
+  color: var(--mention-fg);
+  padding: 0 6px;
+  border-radius: 6px;
+  font-weight: 600;
+}}
 
-  .mention-ping {{
-    background: var(--ping-bg);
-    color: var(--ping-fg);
-    padding: 0 6px;
-    border-radius: 6px;
-    font-weight: 800;
-  }}
+.mention-ping {{
+  background: var(--ping-bg);
+  color: var(--ping-fg);
+  padding: 0 6px;
+  border-radius: 6px;
+  font-weight: 800;
+}}
+
+h1 {{ font-size: 1.6em; margin: 6px 0; }}
+h2 {{ font-size: 1.4em; margin: 6px 0; }}
+h3 {{ font-size: 1.2em; margin: 6px 0; }}
 </style>
 </head>
 <body>
-  <div class="app">
-    <div class="header">
-      <div class="title"><strong>{html.escape(guild_name)}</strong> / <strong>#{html.escape(channel_name)}</strong> のログ</div>
-      <div class="meta">Exported at: {html.escape(exported_at)}（JST）</div>
-    </div>
-    <div class="chat">
-      {messages_html}
-    </div>
+<div class="app">
+  <div class="header">
+    <div class="title"><strong>{html.escape(guild_name)}</strong> / <strong>#{html.escape(channel_name)}</strong></div>
+    <div class="meta">Exported at: {exported_at}（JST）</div>
   </div>
+  <div class="chat">
+    {messages_html}
+  </div>
+</div>
 </body>
 </html>
 """
@@ -151,52 +148,49 @@ def make_html_page(guild_name: str, channel_name: str, exported_at: str, message
 def _display_user(guild: discord.Guild | None, user_id: int) -> str:
     if not guild:
         return ""
-    member = guild.get_member(user_id)
-    return f"@{member.display_name}" if member else ""
-
-def replace_discord_mentions_to_names(raw: str, guild: discord.Guild | None) -> str:
-    raw = USER_MENTION_RE.sub(lambda m: _display_user(guild, int(m.group(1))), raw)
-    return raw
+    m = guild.get_member(user_id)
+    return f"@{m.display_name}" if m else ""
 
 def sanitize(text: str, guild: discord.Guild | None) -> str:
-    text = replace_discord_mentions_to_names(text, guild)
-    esc = html.escape(text)
+    text = USER_MENTION_RE.sub(lambda m: _display_user(guild, int(m.group(1))), text)
 
-    esc = URL_RE.sub(r'<a href="\\1" target="_blank">\\1</a>', esc)
-    esc = esc.replace("@everyone", '<span class="mention-ping">@everyone</span>')
-    esc = esc.replace("@here", '<span class="mention-ping">@here</span>')
-    esc = re.sub(r'(@[^\s<]+)', r'<span class="mention">\1</span>', esc)
+    lines = []
+    for line in text.splitlines():
+        if line.startswith("### "):
+            lines.append(f"<h3>{html.escape(line[4:])}</h3>")
+        elif line.startswith("## "):
+            lines.append(f"<h2>{html.escape(line[3:])}</h2>")
+        elif line.startswith("# "):
+            lines.append(f"<h1>{html.escape(line[2:])}</h1>")
+        else:
+            esc = html.escape(line)
+            esc = URL_RE.sub(r'<a href="\\1" target="_blank">\\1</a>', esc)
+            esc = esc.replace("@everyone", '<span class="mention-ping">@everyone</span>')
+            esc = esc.replace("@here", '<span class="mention-ping">@here</span>')
+            esc = re.sub(r'(@[^\s<]+)', r'<span class="mention">\1</span>', esc)
+            lines.append(esc)
 
-    return esc
+    return "<br>".join(lines)
 
 # =====================
 # メッセージHTML
 # =====================
 def msg_to_html(m: discord.Message) -> str:
     time_jst = m.created_at.astimezone(JST).strftime(TIME_FORMAT)
-
     content = sanitize(m.content or "", m.guild)
 
     return f"""
-    <div class="msg">
-      <img class="avatar" src="{html.escape(m.author.display_avatar.url)}">
-      <div>
-        <div class="line1">
-          <span class="author">{html.escape(m.author.display_name)}</span>
-          <span class="time">{time_jst}</span>
-        </div>
-        <div class="content">{content}</div>
-      </div>
+<div class="msg">
+  <img class="avatar" src="{html.escape(m.author.display_avatar.url)}">
+  <div>
+    <div>
+      <span class="author">{html.escape(m.author.display_name)}</span>
+      <span class="time">{time_jst}</span>
     </div>
-    """
-
-# =====================
-# ファイル名
-# =====================
-def make_filename(channel_name: str) -> str:
-    safe = re.sub(r"[^\w\-]+", "_", channel_name)
-    stamp = datetime.now(JST).strftime("%Y%m%d_%H%M%S")
-    return f"{safe}__{stamp}.html"
+    <div class="content">{content}</div>
+  </div>
+</div>
+"""
 
 # =====================
 # Cog
@@ -208,34 +202,30 @@ class ExportHtmlCog(commands.Cog):
     @commands.command(name="export")
     async def export(self, ctx: commands.Context, limit: int = DEFAULT_LIMIT):
         if not isinstance(ctx.channel, discord.TextChannel):
-            await ctx.reply("テキストチャンネルで実行してください。")
             return
-
-        channel = ctx.channel
-        limit = max(1, min(limit, MAX_LIMIT))
 
         if ctx.guild:
             try:
-                await asyncio.wait_for(ctx.guild.chunk(cache=True), timeout=5.0)
+                await asyncio.wait_for(ctx.guild.chunk(cache=True), timeout=5)
             except Exception:
                 pass
 
-        messages = []
-        async for m in channel.history(limit=limit, oldest_first=True):
-            messages.append(m)
+        msgs = []
+        async for m in ctx.channel.history(limit=min(limit, MAX_LIMIT), oldest_first=True):
+            msgs.append(m)
 
-        messages_html = "\n".join(msg_to_html(m) for m in messages)
+        html_msgs = "\n".join(msg_to_html(m) for m in msgs)
 
         page = make_html_page(
-            guild_name=ctx.guild.name if ctx.guild else "DM",
-            channel_name=channel.name,
-            exported_at=datetime.now(JST).strftime("%Y-%m-%d %H:%M:%S"),
-            messages_html=messages_html,
+            ctx.guild.name if ctx.guild else "DM",
+            ctx.channel.name,
+            datetime.now(JST).strftime("%Y-%m-%d %H:%M:%S"),
+            html_msgs,
         )
 
         data = page.encode("utf-8")
-        file = discord.File(io.BytesIO(data), filename=make_filename(channel.name))
-        await ctx.send("✅ HTMLログを生成しました（JST）", file=file)
+        file = discord.File(io.BytesIO(data), filename=f"{ctx.channel.name}.html")
+        await ctx.send("✅ HTMLログを生成しました", file=file)
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(ExportHtmlCog(bot))
