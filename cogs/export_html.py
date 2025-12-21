@@ -38,11 +38,9 @@ def make_html_page(guild_name: str, channel_name: str, exported_at: str, message
     --border: rgba(255,255,255,.06);
     --link: #00a8fc;
 
-    /* 通常メンション */
     --mention-bg: rgba(88,101,242,.18);
     --mention-fg: #c9d4ff;
 
-    /* @everyone/@here 専用 */
     --ping-bg: rgba(250,166,26,.20);
     --ping-fg: #ffd59a;
   }}
@@ -118,7 +116,6 @@ def make_html_page(guild_name: str, channel_name: str, exported_at: str, message
     object-fit: cover;
   }}
 
-  /* 通常メンション（@表示名 / #チャンネル / @ロールなど） */
   .mention {{
     background: var(--mention-bg);
     color: var(--mention-fg);
@@ -127,7 +124,6 @@ def make_html_page(guild_name: str, channel_name: str, exported_at: str, message
     font-weight: 600;
   }}
 
-  /* @everyone / @here 専用 */
   .mention-ping {{
     background: var(--ping-bg);
     color: var(--ping-fg);
@@ -154,17 +150,13 @@ def make_html_page(guild_name: str, channel_name: str, exported_at: str, message
 
 def _display_user(guild: discord.Guild | None, user_id: int) -> str:
     """
-    <@id> / <@!id> を @表示名 に変換。
-    サーバー内にいればオフラインでも表示名にする（guild.chunk後は get_member で取れる想定）。
-    取れない場合は「表示しない」（空文字）。IDは出さない。
+    在籍ユーザーのみ @表示名 に変換。取得できなければ（退室済み等）表示しない。
     """
     if not guild:
         return ""
-
     member = guild.get_member(user_id)
     if member:
         return f"@{member.display_name}"
-
     return ""
 
 
@@ -190,23 +182,21 @@ def replace_discord_mentions_to_names(raw: str, guild: discord.Guild | None) -> 
 
 
 def sanitize(text: str, guild: discord.Guild | None) -> str:
-    # 1) Discord内部メンションを表示名へ（取れないユーザーは空文字）
     text = replace_discord_mentions_to_names(text, guild)
 
-    # 2) 連続スペースだけ軽く詰める（空文字化で崩れた時の見た目対策）
+    # 連続スペースのみ軽く整形（空文字化で崩れた見た目対策）
     text = re.sub(r"[ \t]{2,}", " ", text)
 
-    # 3) HTMLエスケープ
     esc = html.escape(text)
 
-    # 4) URLリンク化（元仕様維持：\1を文字列として使う）
+    # URLリンク化（あなたの元仕様に合わせて \1 形式）
     esc = URL_RE.sub(r'<a href="\\1" target="_blank" rel="noopener noreferrer">\\1</a>', esc)
 
-    # 5) @everyone / @here を専用色
+    # @everyone / @here を専用色
     esc = esc.replace("@everyone", '<span class="mention-ping">@everyone</span>')
     esc = esc.replace("@here", '<span class="mention-ping">@here</span>')
 
-    # 6) 通常メンション色（@表示名 / @ロール / #チャンネル 等）
+    # 通常メンション色（すでに挿入したHTMLタグ内部は触らないように軽く防御）
     esc = re.sub(r'(?<!<)(?<![\w/])(@[^\s<]+)', r'<span class="mention">\1</span>', esc)
     esc = re.sub(r'(?<!<)(?<![\w/])(#\S+)', r'<span class="mention">\1</span>', esc)
 
@@ -264,6 +254,21 @@ def make_filename(channel_name: str) -> str:
     return f"{safe(channel_name)}__{stamp}.html"
 
 
+def _missing_perms_text(perms: discord.Permissions) -> str:
+    need = []
+    if not perms.view_channel:
+        need.append("View Channel（チャンネルを見る）")
+    if not perms.read_message_history:
+        need.append("Read Message History（履歴を見る）")
+    if not perms.send_messages:
+        need.append("Send Messages（送信）")
+    if not perms.attach_files:
+        need.append("Attach Files（ファイル添付）")
+    if need:
+        return "⚠️ Botに権限が足りません：\n- " + "\n- ".join(need)
+    return ""
+
+
 class ExportHtmlCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -277,28 +282,49 @@ class ExportHtmlCog(commands.Cog):
 
         channel: discord.TextChannel = ctx.channel
 
+        # 権限チェック（ここがないと「DLできない」が黙って起きやすい）
+        me = channel.guild.me
+        if me is None:
+            await ctx.reply("⚠️ Bot自身の情報が取得できませんでした。少し待ってから再実行してください。")
+            return
+
+        perms = channel.permissions_for(me)
+        miss = _missing_perms_text(perms)
+        if miss:
+            await ctx.reply(miss)
+            return
+
         if limit < 1:
             limit = 1
         if limit > MAX_LIMIT:
             limit = MAX_LIMIT
 
-        # ★重要：オフライン含むメンバーをキャッシュへ（Members Intent が有効な場合に効く）
+        # オフラインも含めたい場合：members intent が有効なら chunk が効く
         if ctx.guild is not None:
             try:
                 await ctx.guild.chunk(cache=True)
             except discord.Forbidden:
-                # chunkに失敗しても export 自体は続行（取れた分だけメンション名にする）
+                # chunk不可でも export 自体は継続
+                pass
+            except Exception:
+                # ここで落とさない
                 pass
 
         guild_name = ctx.guild.name if ctx.guild else "DM"
         filename = make_filename(channel.name)
 
-        # サイズ超過なら自動で件数を減らす
         current = limit
         while True:
             msgs: list[discord.Message] = []
-            async for m in channel.history(limit=current, oldest_first=True):
-                msgs.append(m)
+            try:
+                async for m in channel.history(limit=current, oldest_first=True):
+                    msgs.append(m)
+            except discord.Forbidden:
+                await ctx.reply("⚠️ メッセージ履歴を読む権限がありません（Read Message History）。")
+                return
+            except discord.HTTPException as e:
+                await ctx.reply(f"⚠️ Discord API エラーで履歴取得に失敗しました：{e}")
+                return
 
             messages_html = "\n".join(msg_to_html(m) for m in msgs)
             page = make_html_page(
@@ -310,12 +336,20 @@ class ExportHtmlCog(commands.Cog):
             data = page.encode("utf-8")
 
             if len(data) <= SAFE_MAX_BYTES:
-                file = discord.File(fp=io.BytesIO(data), filename=filename)
-                await ctx.send(f"✅ HTMLログを生成しました（{current}件）", file=file)
+                try:
+                    file = discord.File(fp=io.BytesIO(data), filename=filename)
+                    await ctx.send(f"✅ HTMLログを生成しました（{current}件）", file=file)
+                except discord.Forbidden:
+                    await ctx.reply("⚠️ ファイル添付または送信権限がありません（Attach Files / Send Messages）。")
+                except discord.HTTPException as e:
+                    await ctx.reply(f"⚠️ ファイル送信に失敗しました：{e}")
                 return
 
             if current <= 50:
-                await ctx.send("⚠️ HTMLが大きすぎて添付できません。`!export 100` など件数を減らして試してください。")
+                await ctx.send(
+                    "⚠️ HTMLが大きすぎて添付できません。\n"
+                    "画像が多いと8MBを超えやすいです。`!export 100` など件数を減らして試してください。"
+                )
                 return
 
             current = max(50, current // 2)
