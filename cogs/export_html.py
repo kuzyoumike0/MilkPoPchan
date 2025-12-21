@@ -154,11 +154,17 @@ def msg_to_html(m: discord.Message) -> str:
     </div>
     """
 
-def make_filename(guild: str, channel: str) -> str:
+def make_filename(channel_name: str) -> str:
+    """
+    ダウンロード名を「テキストチャンネル名」にする。
+    同名の上書きを避けるため、末尾にタイムスタンプは付ける。
+    """
     def safe(s: str) -> str:
         return re.sub(r"[^\w\-]+", "_", s)
+
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return f"{safe(guild)}__{safe(channel)}__{stamp}.html"
+    # 例: general__20251221_100500.html
+    return f"{safe(channel_name)}__{stamp}.html"
 
 class ExportHtmlCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -179,7 +185,7 @@ class ExportHtmlCog(commands.Cog):
             limit = MAX_LIMIT
 
         guild_name = ctx.guild.name if ctx.guild else "DM"
-        filename = make_filename(guild_name, channel.name)
+        filename = make_filename(channel.name)  # ★ここが変更点（チャンネル名ベース）
 
         # サイズ超過なら自動で件数を減らす
         current = limit
@@ -211,6 +217,3 @@ class ExportHtmlCog(commands.Cog):
 # ★ これが必須：load_extension で読み込む入口
 async def setup(bot: commands.Bot):
     await bot.add_cog(ExportHtmlCog(bot))
-
-    
-
