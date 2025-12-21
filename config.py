@@ -1,5 +1,6 @@
 # config.py
-TOKEN = "YOUR_BOT_TOKEN"
+TOKEN = os.getenv("DISCORD_TOKEN", "").strip()
+
 
 # !setup を打つ専用チャンネル（制限しないなら None）
 SETUP_CHANNEL_ID = None  # 例: 123456789012345678
