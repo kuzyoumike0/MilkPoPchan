@@ -38,3 +38,13 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
+token = os.getenv("DISCORD_TOKEN")
+if not token:
+    raise RuntimeError("DISCORD_TOKEN が未設定です（Railway Variablesを確認）")
+
+if token.strip() != token:
+    raise RuntimeError("DISCORD_TOKEN の前後に空白/改行が入っています（VariablesのValueを修正）")
+
+if " " in token:
+    raise RuntimeError("DISCORD_TOKEN にスペースが含まれています（Valueを修正）")
