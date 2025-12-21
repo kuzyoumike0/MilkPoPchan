@@ -155,8 +155,8 @@ def make_html_page(guild_name: str, channel_name: str, exported_at: str, message
 def _display_user(guild: discord.Guild | None, user_id: int) -> str:
     """
     <@id> / <@!id> を @表示名 に変換。
-    現在サーバー内にいない（取得不能）場合は「表示しない」（空文字）。
-    ※ IDは絶対に出さない。
+    サーバー内にいればオフラインでも表示名にする（guild.chunk後は get_member で取れる想定）。
+    取れない場合は「表示しない」（空文字）。IDは出さない。
     """
     if not guild:
         return ""
@@ -165,12 +165,10 @@ def _display_user(guild: discord.Guild | None, user_id: int) -> str:
     if member:
         return f"@{member.display_name}"
 
-    # 退室済み/取得不能：何も出さない
     return ""
 
 
 def _display_role(guild: discord.Guild | None, role_id: int) -> str:
-    # ロールが取れない場合は、IDを出さず、無難なテキストにする
     if not guild:
         return "@ロール"
     role = guild.get_role(role_id)
@@ -178,7 +176,6 @@ def _display_role(guild: discord.Guild | None, role_id: int) -> str:
 
 
 def _display_channel(guild: discord.Guild | None, channel_id: int) -> str:
-    # チャンネルが取れない場合も、IDは出さない
     if not guild:
         return "#チャンネル"
     ch = guild.get_channel(channel_id)
@@ -186,11 +183,6 @@ def _display_channel(guild: discord.Guild | None, channel_id: int) -> str:
 
 
 def replace_discord_mentions_to_names(raw: str, guild: discord.Guild | None) -> str:
-    """
-    <@123>/<@!123> -> @表示名（取れない場合は空文字）
-    <@&456> -> @ロール名（取れない場合は @ロール）
-    <#789> -> #チャンネル名（取れない場合は #チャンネル）
-    """
     raw = USER_MENTION_RE.sub(lambda m: _display_user(guild, int(m.group(1))), raw)
     raw = ROLE_MENTION_RE.sub(lambda m: _display_role(guild, int(m.group(1))), raw)
     raw = CHANNEL_MENTION_RE.sub(lambda m: _display_channel(guild, int(m.group(1))), raw)
@@ -201,8 +193,7 @@ def sanitize(text: str, guild: discord.Guild | None) -> str:
     # 1) Discord内部メンションを表示名へ（取れないユーザーは空文字）
     text = replace_discord_mentions_to_names(text, guild)
 
-    # 2) 退室済み等で空文字が混ざるので、目立つ崩れを抑える（軽く整形）
-    #    ※ 行頭・行末はそのまま、連続スペースだけ詰める
+    # 2) 連続スペースだけ軽く詰める（空文字化で崩れた時の見た目対策）
     text = re.sub(r"[ \t]{2,}", " ", text)
 
     # 3) HTMLエスケープ
@@ -211,12 +202,11 @@ def sanitize(text: str, guild: discord.Guild | None) -> str:
     # 4) URLリンク化（元仕様維持：\1を文字列として使う）
     esc = URL_RE.sub(r'<a href="\\1" target="_blank" rel="noopener noreferrer">\\1</a>', esc)
 
-    # 5) @everyone / @here を専用色（エスケープ後に置換）
+    # 5) @everyone / @here を専用色
     esc = esc.replace("@everyone", '<span class="mention-ping">@everyone</span>')
     esc = esc.replace("@here", '<span class="mention-ping">@here</span>')
 
     # 6) 通常メンション色（@表示名 / @ロール / #チャンネル 等）
-    #    すでに挿入したHTMLタグ内部は触らないように軽く防御（(?<!<)）
     esc = re.sub(r'(?<!<)(?<![\w/])(@[^\s<]+)', r'<span class="mention">\1</span>', esc)
     esc = re.sub(r'(?<!<)(?<![\w/])(#\S+)', r'<span class="mention">\1</span>', esc)
 
@@ -267,9 +257,6 @@ def msg_to_html(m: discord.Message) -> str:
 
 
 def make_filename(channel_name: str) -> str:
-    """
-    ダウンロード名を「テキストチャンネル名」にする（チャンネル名＋タイムスタンプ）
-    """
     def safe(s: str) -> str:
         return re.sub(r"[^\w\-]+", "_", s)
 
@@ -294,6 +281,14 @@ class ExportHtmlCog(commands.Cog):
             limit = 1
         if limit > MAX_LIMIT:
             limit = MAX_LIMIT
+
+        # ★重要：オフライン含むメンバーをキャッシュへ（Members Intent が有効な場合に効く）
+        if ctx.guild is not None:
+            try:
+                await ctx.guild.chunk(cache=True)
+            except discord.Forbidden:
+                # chunkに失敗しても export 自体は続行（取れた分だけメンション名にする）
+                pass
 
         guild_name = ctx.guild.name if ctx.guild else "DM"
         filename = make_filename(channel.name)
@@ -326,6 +321,5 @@ class ExportHtmlCog(commands.Cog):
             current = max(50, current // 2)
 
 
-# ★ これが必須：load_extension で読み込む入口
 async def setup(bot: commands.Bot):
     await bot.add_cog(ExportHtmlCog(bot))
