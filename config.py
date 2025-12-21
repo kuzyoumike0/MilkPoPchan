@@ -27,4 +27,9 @@ SESSION_INDIVIDUAL_CATEGORY_IDS = {
     3: 1452111331938402359,
 }
 
-INDIVIDUAL_PREFIX = "個別"
+
+# 見学ロールID（見学ロール同士でチャット可能にする）
+SPECTATOR_ROLE_ID = int(os.getenv("SPECTATOR_ROLE_ID", "0") or "0")
+
+# チャンネル作成先カテゴリ（未設定なら実行チャンネルと同じカテゴリ）
+CREATE_CATEGORY_ID = int(os.getenv("CREATE_CATEGORY_ID", "0") or "0")
