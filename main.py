@@ -3,13 +3,11 @@ import asyncio
 import discord
 from discord.ext import commands
 
-COG_LIST = [
-    "cogs.export_html",
-]
+COG_LIST = ["cogs.export_html"]
 
 def build_intents() -> discord.Intents:
     intents = discord.Intents.default()
-    intents.message_content = True  # ログ本文取得に必要（DevPortalでもON）
+    intents.message_content = True  # !export 用
     intents.members = True
     return intents
 
@@ -17,18 +15,17 @@ class MyBot(commands.Bot):
     async def setup_hook(self) -> None:
         for ext in COG_LIST:
             await self.load_extension(ext)
-        await self.tree.sync()
 
 async def main():
     token = os.getenv("DISCORD_TOKEN")
     if not token:
-        raise RuntimeError("環境変数 DISCORD_TOKEN が設定されていません。")
+        raise RuntimeError("DISCORD_TOKEN が未設定です（Railway Variablesを確認）")
+    if token.strip() != token:
+        raise RuntimeError("DISCORD_TOKEN の前後に空白/改行があります（VariablesのValueを修正）")
+    if " " in token:
+        raise RuntimeError("DISCORD_TOKEN にスペースが含まれています（VariablesのValueを修正）")
 
-    bot = MyBot(
-        command_prefix="!",
-        intents=build_intents(),
-        help_command=None,
-    )
+    bot = MyBot(command_prefix="!", intents=build_intents(), help_command=None)
 
     @bot.event
     async def on_ready():
@@ -38,13 +35,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
-token = os.getenv("DISCORD_TOKEN")
-if not token:
-    raise RuntimeError("DISCORD_TOKEN が未設定です（Railway Variablesを確認）")
-
-if token.strip() != token:
-    raise RuntimeError("DISCORD_TOKEN の前後に空白/改行が入っています（VariablesのValueを修正）")
-
-if " " in token:
-    raise RuntimeError("DISCORD_TOKEN にスペースが含まれています（Valueを修正）")
