@@ -49,41 +49,25 @@ def _is_adminish(member: discord.Member) -> bool:
 # Naming
 # -----------------------
 def _shared_channel_title(session_no: int) -> str:
-    # 例: session1-2025-12-21-1030
     now = datetime.now(JST)
     return f"session{session_no}-{now:%Y-%m-%d-%H%M}"
 
 
 def _safe_name_for_channel(s: str) -> str:
-    """
-    Discordチャンネル名に安全に収まるように軽く整形。
-    display_name を元にするので、空白→-、一部記号除去、長さ制限。
-    """
     s = s.strip()
-    # ここでは lower() しない（元の見た目を尊重したい気持ちはあるが、
-    # Discord側が最終的に小文字へ寄せるので、挙動差を減らすためこのまま）
     s = s.replace(" ", "-").replace("/", "-").replace("\\", "-")
-
-    # 記号をざっくり除去（必要なら追加）
     for ch in ["@", "#", ":", ",", ".", "。", "、", "’", "'", "\"", "“", "”",
                "(", ")", "[", "]", "{", "}", "!", "?", "？"]:
         s = s.replace(ch, "")
-
     while "--" in s:
         s = s.replace("--", "-")
-
     if not s:
         s = "user"
-
-    # Discordのチャンネル名は最大100文字程度だが余裕をみる
     return s[:80]
 
 
 def _individual_channel_title(member: discord.Member) -> str:
-    """
-    個別テキストチャンネル名は「VCで見えている名前(display_name)」のみに依存。
-    プレフィックス、セッション番号は付けない。
-    """
+    # VCで見えている名前(display_name)のみ（prefix等は付けない）
     return _safe_name_for_channel(member.display_name)
 
 
@@ -91,7 +75,6 @@ def _individual_channel_title(member: discord.Member) -> str:
 # Views
 # -----------------------
 class SetupView(discord.ui.View):
-    """!setup 後のボタン群（セッション別：共有作成／個別作成）"""
     def __init__(self, cog: "SetupChannelsCog"):
         super().__init__(timeout=None)
         self.cog = cog
@@ -167,7 +150,7 @@ class SetupChannelsCog(commands.Cog):
         # 永続View登録
         self.bot.add_view(SetupView(self))
 
-        # 既存削除ボタン復元（shared/individual両対応）
+        # 既存削除ボタン復元
         for ch_id_str in list(self.db.keys()):
             try:
                 ch_id = int(ch_id_str)
@@ -175,9 +158,6 @@ class SetupChannelsCog(commands.Cog):
                 continue
             self.bot.add_view(DeleteView(self, ch_id))
 
-    # -----------------
-    # !setup
-    # -----------------
     @commands.command(name="setup")
     async def setup_cmd(self, ctx: commands.Context):
         if config.SETUP_CHANNEL_ID and ctx.channel.id != config.SETUP_CHANNEL_ID:
@@ -188,16 +168,13 @@ class SetupChannelsCog(commands.Cog):
             title="セットアップ",
             description=(
                 "下のボタンで作成できます。\n\n"
-                "【共有】VC参加者全員が閲覧できる共有テキストchを作成（タイトル：セッションN + 日時）\n"
-                "【個別】VC参加者全員ぶん個別テキストchを作成（閲覧：本人 + setup実行者 + 見学ロール）\n\n"
+                "【共有】VC参加者全員＋見学ロールが閲覧/チャットできる共有テキストchを作成（タイトル：セッションN + 日時）\n"
+                "【個別】VC参加者全員ぶん個別テキストchを作成（閲覧/チャット：本人 + setup実行者 + 見学ロール）\n\n"
                 "※ すべてのチャンネルに削除ボタンが付きます。"
             ),
         )
         await ctx.send(embed=embed, view=SetupView(self))
 
-    # -----------------
-    # Getters
-    # -----------------
     def _get_session_vc(self, guild: discord.Guild, session_no: int) -> Optional[discord.VoiceChannel]:
         vc_id = getattr(config, "SESSION_VC_IDS", {}).get(session_no)
         ch = guild.get_channel(vc_id) if vc_id else None
@@ -248,15 +225,26 @@ class SetupChannelsCog(commands.Cog):
             await interaction.followup.send("共有ch作成先カテゴリが見つかりません（SESSION_SHARED_CATEGORY_IDSを確認）。", ephemeral=True)
             return
 
+        spectator = self._get_spectator_role(guild)
+        if spectator is None:
+            await interaction.followup.send("見学ロールが見つかりません（SPECTATOR_ROLE_IDを確認）。", ephemeral=True)
+            return
+
         name = _shared_channel_title(session_no)
 
         overwrites = {guild.default_role: discord.PermissionOverwrite(view_channel=False)}
 
-        # 実行者がVCに居ないケースも考慮（実運用上便利）
+        # 見学ロール：閲覧/チャット可（ここが変更点）
+        overwrites[spectator] = discord.PermissionOverwrite(
+            view_channel=True, read_message_history=True, send_messages=True
+        )
+
+        # 実行者：閲覧/チャット可
         overwrites[invoker] = discord.PermissionOverwrite(
             view_channel=True, read_message_history=True, send_messages=True
         )
 
+        # VC参加者：閲覧/チャット可
         for m in vc_members:
             overwrites[m] = discord.PermissionOverwrite(
                 view_channel=True, read_message_history=True, send_messages=True
@@ -273,7 +261,6 @@ class SetupChannelsCog(commands.Cog):
             await interaction.followup.send("権限不足で共有テキストchを作成できません。", ephemeral=True)
             return
 
-        # DB登録（削除ボタン復元用）
         self.db[str(text_ch.id)] = {
             "guild_id": guild.id,
             "creator_id": invoker.id,
@@ -287,7 +274,7 @@ class SetupChannelsCog(commands.Cog):
             title="共有テキストチャンネル",
             description=(
                 f"セッション{session_no} / 対象VC：{vc.mention}\n"
-                f"閲覧：VC参加者\n\n"
+                f"閲覧/チャット：VC参加者 + {spectator.mention}\n\n"
                 "削除する場合は下のボタンを押してください。"
             ),
         )
@@ -296,7 +283,7 @@ class SetupChannelsCog(commands.Cog):
         await interaction.followup.send(f"✅ 共有テキストchを作成しました：{text_ch.mention}", ephemeral=True)
 
     # -----------------
-    # Individual create (for every VC member)
+    # Individual create
     # -----------------
     async def handle_individual_create(self, interaction: discord.Interaction, session_no: int):
         await interaction.response.defer(ephemeral=True)
@@ -335,23 +322,22 @@ class SetupChannelsCog(commands.Cog):
         failed: List[str] = []
 
         for target in vc_members:
-            # ★ここが要件：VCで見えている名前そのまま（display_name）に依存
-            ch_name = _individual_channel_title(target)
+            ch_name = _individual_channel_title(target)  # display_name由来
 
             overwrites = {
                 guild.default_role: discord.PermissionOverwrite(view_channel=False),
 
-                # 見学ロール：全員「閲覧できるようにする」
+                # 見学ロール：閲覧/チャット可（ここが変更点）
                 spectator: discord.PermissionOverwrite(
-                    view_channel=True, read_message_history=True, send_messages=False
+                    view_channel=True, read_message_history=True, send_messages=True
                 ),
 
-                # setup実行者：閲覧＋送信可
+                # setup実行者：閲覧/チャット可
                 invoker: discord.PermissionOverwrite(
                     view_channel=True, read_message_history=True, send_messages=True
                 ),
 
-                # 対象本人：閲覧＋送信可
+                # 対象本人：閲覧/チャット可
                 target: discord.PermissionOverwrite(
                     view_channel=True, read_message_history=True, send_messages=True
                 ),
@@ -366,7 +352,6 @@ class SetupChannelsCog(commands.Cog):
                 )
                 created += 1
 
-                # DB登録
                 self.db[str(text_ch.id)] = {
                     "guild_id": guild.id,
                     "creator_id": invoker.id,
@@ -383,7 +368,7 @@ class SetupChannelsCog(commands.Cog):
                         f"セッション{session_no} / 対象VC：{vc.mention}\n"
                         f"本人：{target.mention}\n"
                         f"作成者：{invoker.mention}\n"
-                        f"見学：{spectator.mention}（閲覧のみ）\n\n"
+                        f"見学：{spectator.mention}（閲覧/チャット可）\n\n"
                         "削除する場合は下のボタンを押してください。"
                     ),
                 )
@@ -401,7 +386,7 @@ class SetupChannelsCog(commands.Cog):
         await interaction.followup.send(msg, ephemeral=True)
 
     # -----------------
-    # Delete (all channels)
+    # Delete
     # -----------------
     async def handle_delete(self, interaction: discord.Interaction, channel_id: int):
         await interaction.response.defer(ephemeral=True)
@@ -418,7 +403,6 @@ class SetupChannelsCog(commands.Cog):
 
         ch = guild.get_channel(channel_id)
         if not isinstance(ch, discord.TextChannel):
-            # DB掃除
             if str(channel_id) in self.db:
                 self.db.pop(str(channel_id), None)
                 _save_db(self.db)
@@ -428,7 +412,6 @@ class SetupChannelsCog(commands.Cog):
         info = self.db.get(str(channel_id), {})
         creator_id = info.get("creator_id")
 
-        # 削除できる人：作成者 or 管理者
         if creator_id != member.id and not _is_adminish(member):
             await interaction.followup.send("削除できるのは作成者または管理者のみです。", ephemeral=True)
             return
@@ -441,7 +424,6 @@ class SetupChannelsCog(commands.Cog):
 
         self.db.pop(str(channel_id), None)
         _save_db(self.db)
-
         await interaction.followup.send("🗑 チャンネルを削除しました。", ephemeral=True)
 
 
