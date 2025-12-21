@@ -1,423 +1,449 @@
 from __future__ import annotations
 
-import html
-import io
-import re
+import json
+import os
+from typing import Dict, Optional, List
 from datetime import datetime
-from typing import Optional
 from zoneinfo import ZoneInfo
 
 import discord
 from discord.ext import commands
 
-# ================= 設定 =================
-DEFAULT_LIMIT = 200
-MAX_LIMIT = 5000
+import config
 
+DB_PATH = os.path.join("data", "setup_channels_db.json")
 JST = ZoneInfo("Asia/Tokyo")
-TIME_FORMAT = "%Y-%m-%d %H:%M"  # 例: 2025-12-21 10:05
 
-# Discord添付上限対策（無料枠 8MB を想定して安全側）
-SAFE_MAX_BYTES = 8 * 1024 * 1024 - 200_000
 
-URL_RE = re.compile(r"(https?://[^\s]+)")
+# -----------------------
+# DB helpers
+# -----------------------
+def _ensure_db():
+    os.makedirs("data", exist_ok=True)
+    if not os.path.exists(DB_PATH):
+        with open(DB_PATH, "w", encoding="utf-8") as f:
+            json.dump({}, f)
 
-# Discordメンションの内部表現
-USER_MENTION_RE = re.compile(r"<@!?(\d+)>")
-ROLE_MENTION_RE = re.compile(r"<@&(\d+)>")
-CHANNEL_MENTION_RE = re.compile(r"<#(\d+)>")
 
-# ================= HTML（Discord風UI） =================
-def make_html_page(guild_name: str, channel_name: str, exported_at: str, messages_html: str) -> str:
-    return f"""<!doctype html>
-<html lang="ja">
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>{html.escape(guild_name)} - #{html.escape(channel_name)} (export)</title>
-<style>
-  :root {{
-    --bg: #313338;
-    --panel: #2b2d31;
-    --text: #dbdee1;
-    --muted: #949ba4;
-    --name: #f2f3f5;
-    --border: rgba(255,255,255,.06);
-    --link: #00a8fc;
-    --code: #1e1f22;
-  }}
-  body {{
-    margin: 0;
-    background: #1e1f22;
-    color: var(--text);
-    font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans JP",
-      "Hiragino Kaku Gothic ProN", "Yu Gothic", sans-serif;
-  }}
-  .app {{
-    max-width: 1100px;
-    margin: 0 auto;
-    padding: 24px 12px;
-  }}
-  .header {{
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 14px 16px;
-    margin-bottom: 12px;
-  }}
-  .title {{
-    font-size: 14px;
-    color: var(--muted);
-  }}
-  .title strong {{
-    color: var(--name);
-    font-weight: 700;
-  }}
-  .meta {{
-    font-size: 12px;
-    margin-top: 6px;
-    color: var(--muted);
-  }}
-  .chat {{
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    overflow: hidden;
-  }}
-  .msg {{
-    display: grid;
-    grid-template-columns: 44px 1fr;
-    gap: 12px;
-    padding: 10px 16px;
-    border-top: 1px solid var(--border);
-  }}
-  .msg:first-child {{
-    border-top: none;
-  }}
-  .avatar {{
-    width: 40px;
-    height: 40px;
-    border-radius: 999px;
-    object-fit: cover;
-    background: #111;
-    border: 1px solid var(--border);
-  }}
-  .line1 {{
-    display: flex;
-    align-items: baseline;
-    gap: 8px;
-  }}
-  .author {{
-    color: var(--name);
-    font-weight: 700;
-    font-size: 14px;
-  }}
-  .time {{
-    color: var(--muted);
-    font-size: 12px;
-  }}
-  .content {{
-    margin-top: 2px;
-    font-size: 14px;
-    line-height: 1.5;
-    white-space: pre-wrap;
-    word-break: break-word;
-  }}
-  a {{
-    color: var(--link);
-    text-decoration: none;
-  }}
-  a:hover {{ text-decoration: underline; }}
-  .attach {{
-    margin-top: 8px;
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-  }}
-  .attach img {{
-    max-width: 360px;
-    max-height: 240px;
-    border-radius: 10px;
-    border: 1px solid var(--border);
-    object-fit: cover;
-  }}
-  .filelink {{
-    margin-top: 6px;
-  }}
-  .embed {{
-    margin-top: 8px;
-    padding: 10px 12px;
-    border-left: 4px solid rgba(88,101,242,.9);
-    background: rgba(0,0,0,.15);
-    border-radius: 8px;
-  }}
-  .embed .etitle {{
-    font-weight: 700;
-    margin-bottom: 4px;
-  }}
-  .code {{
-    background: var(--code);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 10px 12px;
-    margin-top: 6px;
-    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
-    font-size: 13px;
-    white-space: pre-wrap;
-  }}
-  .mention {{
-    padding: 0 6px;
-    border-radius: 6px;
-    font-weight: 600;
-    background: rgba(88,101,242,.18);
-    color: #c9d4ff;
-  }}
-</style>
-</head>
-<body>
-  <div class="app">
-    <div class="header">
-      <div class="title"><strong>{html.escape(guild_name)}</strong> / <strong>#{html.escape(channel_name)}</strong> のログ</div>
-      <div class="meta">Exported at (JST): {html.escape(exported_at)}</div>
-    </div>
-    <div class="chat">
-      {messages_html}
-    </div>
-  </div>
-</body>
-</html>
-"""
+def _load_db() -> Dict[str, dict]:
+    _ensure_db()
+    try:
+        with open(DB_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
 
-# ================= メンション解決 =================
-def _display_user(guild: Optional[discord.Guild], user_id: int) -> str:
-    if not guild:
-        return f"@{user_id}"
-    member = guild.get_member(user_id)
-    return f"@{member.display_name}" if member else f"@{user_id}"
 
-def _display_role(guild: Optional[discord.Guild], role_id: int) -> str:
-    if not guild:
-        return f"@role:{role_id}"
-    role = guild.get_role(role_id)
-    return f"@{role.name}" if role else f"@role:{role_id}"
+def _save_db(db: Dict[str, dict]) -> None:
+    _ensure_db()
+    with open(DB_PATH, "w", encoding="utf-8") as f:
+        json.dump(db, f, ensure_ascii=False, indent=2)
 
-def _display_channel(guild: Optional[discord.Guild], channel_id: int) -> str:
-    if not guild:
-        return f"#channel:{channel_id}"
-    ch = guild.get_channel(channel_id)
-    return f"#{ch.name}" if ch else f"#channel:{channel_id}"
 
-def replace_mentions_to_text(raw: str, guild: Optional[discord.Guild]) -> str:
-    def repl_user(m: re.Match) -> str:
-        return _display_user(guild, int(m.group(1)))
+def _is_adminish(member: discord.Member) -> bool:
+    p = member.guild_permissions
+    return p.administrator or p.manage_channels
 
-    def repl_role(m: re.Match) -> str:
-        return _display_role(guild, int(m.group(1)))
 
-    def repl_channel(m: re.Match) -> str:
-        return _display_channel(guild, int(m.group(1)))
+# -----------------------
+# Naming
+# -----------------------
+def _shared_channel_title(session_no: int) -> str:
+    # 例: session1-2025-12-21-1030
+    now = datetime.now(JST)
+    return f"session{session_no}-{now:%Y-%m-%d-%H%M}"
 
-    out = USER_MENTION_RE.sub(repl_user, raw)
-    out = ROLE_MENTION_RE.sub(repl_role, out)
-    out = CHANNEL_MENTION_RE.sub(repl_channel, out)
-    return out
 
-def sanitize_to_html(raw: str, guild: Optional[discord.Guild]) -> str:
-    # 1) メンションを @名前/#名前へ（数字のままにしない）
-    text = replace_mentions_to_text(raw, guild)
-
-    # 2) HTMLエスケープ
-    esc = html.escape(text)
-
-    # 3) URLリンク化
-    esc = URL_RE.sub(r'<a href="\1" target="_blank" rel="noopener noreferrer">\1</a>', esc)
-
-    # 4) @xxx / #xxx を軽くハイライト（Discordっぽく）
-    esc = re.sub(r'(?<![\w/])(@[^\s<]+)', r'<span class="mention">\1</span>', esc)
-    esc = re.sub(r'(?<![\w/])(#\S+)', r'<span class="mention">\1</span>', esc)
-
-    # 5) ``` ``` を簡易コード表示（雰囲気）
-    if "```" in esc:
-        parts = esc.split("```")
-        out = []
-        for i, p in enumerate(parts):
-            if i % 2 == 1:
-                out.append(f'<div class="code">{p}</div>')
-            else:
-                out.append(p)
-        esc = "".join(out)
-
-    return esc
-
-# ================= メッセージHTML =================
-def msg_to_html(m: discord.Message) -> str:
-    author = m.author
-    avatar_url = author.display_avatar.url if author.display_avatar else ""
-    author_name = author.display_name
-
-    # ★ JSTで表示（投稿時刻）
-    time_str = m.created_at.astimezone(JST).strftime(TIME_FORMAT)
-
-    content_html = sanitize_to_html(m.content or "", m.guild)
-
-    # 添付（画像はimg、その他はリンク）
-    attach_imgs = []
-    attach_files = []
-    for a in m.attachments:
-        is_img = (a.content_type or "").startswith("image/") or a.filename.lower().endswith(
-            (".png", ".jpg", ".jpeg", ".gif", ".webp")
-        )
-        if is_img:
-            attach_imgs.append(
-                f'<a href="{html.escape(a.url)}" target="_blank" rel="noopener noreferrer">'
-                f'<img src="{html.escape(a.url)}" alt="{html.escape(a.filename)}"></a>'
-            )
-        else:
-            attach_files.append(
-                f'<div class="filelink"><a href="{html.escape(a.url)}" target="_blank" rel="noopener noreferrer">'
-                f'{html.escape(a.filename)}</a></div>'
-            )
-
-    attach_html = ""
-    if attach_imgs or attach_files:
-        attach_html = '<div class="attach">' + "".join(attach_imgs) + "</div>" + "".join(attach_files)
-
-    # embed（タイトル＋説明だけ）
-    embed_html = ""
-    if m.embeds:
-        e = m.embeds[0]
-        et = html.escape(e.title) if e.title else ""
-        ed = html.escape(e.description) if e.description else ""
-        if et or ed:
-            embed_html = f"""
-            <div class="embed">
-              {f'<div class="etitle">{et}</div>' if et else ''}
-              {f'<div class="edesc">{ed}</div>' if ed else ''}
-            </div>
-            """
-
-    return f"""
-    <div class="msg">
-      <img class="avatar" src="{html.escape(avatar_url)}" alt="avatar">
-      <div>
-        <div class="line1">
-          <span class="author">{html.escape(author_name)}</span>
-          <span class="time">{html.escape(time_str)} (JST)</span>
-        </div>
-        <div class="content">{content_html}{embed_html}{attach_html}</div>
-      </div>
-    </div>
+def _safe_name_for_channel(s: str) -> str:
     """
+    Discordチャンネル名に安全に収まるように軽く整形。
+    display_name を元にするので、空白→-、一部記号除去、長さ制限。
+    """
+    s = s.strip()
+    # ここでは lower() しない（元の見た目を尊重したい気持ちはあるが、
+    # Discord側が最終的に小文字へ寄せるので、挙動差を減らすためこのまま）
+    s = s.replace(" ", "-").replace("/", "-").replace("\\", "-")
 
-def make_filename(guild: str, channel: str) -> str:
-    def safe(s: str) -> str:
-        return re.sub(r"[^\w\-]+", "_", s)
-    stamp = datetime.now(JST).strftime("%Y%m%d_%H%M%S")
-    return f"{safe(guild)}__{safe(channel)}__{stamp}.html"
+    # 記号をざっくり除去（必要なら追加）
+    for ch in ["@", "#", ":", ",", ".", "。", "、", "’", "'", "\"", "“", "”",
+               "(", ")", "[", "]", "{", "}", "!", "?", "？"]:
+        s = s.replace(ch, "")
 
-def readable_perm_error() -> str:
-    return (
-        "⚠️ そのチャンネルのログを読む権限が足りません。\n"
-        "Botに以下の権限を付けてください：\n"
-        "・View Channel（チャンネルを見る）\n"
-        "・Read Message History（メッセージ履歴を読む）\n"
-        "（HTMLを返すには Attach Files も必要）"
-    )
+    while "--" in s:
+        s = s.replace("--", "-")
 
-# ================= Cog =================
-class ExportHtmlCog(commands.Cog):
+    if not s:
+        s = "user"
+
+    # Discordのチャンネル名は最大100文字程度だが余裕をみる
+    return s[:80]
+
+
+def _individual_channel_title(member: discord.Member) -> str:
+    """
+    個別テキストチャンネル名は「VCで見えている名前(display_name)」のみに依存。
+    プレフィックス、セッション番号は付けない。
+    """
+    return _safe_name_for_channel(member.display_name)
+
+
+# -----------------------
+# Views
+# -----------------------
+class SetupView(discord.ui.View):
+    """!setup 後のボタン群（セッション別：共有作成／個別作成）"""
+    def __init__(self, cog: "SetupChannelsCog"):
+        super().__init__(timeout=None)
+        self.cog = cog
+
+        self.add_item(SharedCreateButton(cog, 1, row=0))
+        self.add_item(IndividualCreateButton(cog, 1, row=0))
+
+        self.add_item(SharedCreateButton(cog, 2, row=1))
+        self.add_item(IndividualCreateButton(cog, 2, row=1))
+
+        self.add_item(SharedCreateButton(cog, 3, row=2))
+        self.add_item(IndividualCreateButton(cog, 3, row=2))
+
+
+class SharedCreateButton(discord.ui.Button):
+    def __init__(self, cog: "SetupChannelsCog", session_no: int, row: int):
+        super().__init__(
+            label=f"セッション{session_no}：共有テキストch作成",
+            style=discord.ButtonStyle.secondary,
+            custom_id=f"setup:shared_create:{session_no}",
+            row=row,
+        )
+        self.cog = cog
+        self.session_no = session_no
+
+    async def callback(self, interaction: discord.Interaction):
+        await self.cog.handle_shared_create(interaction, self.session_no)
+
+
+class IndividualCreateButton(discord.ui.Button):
+    def __init__(self, cog: "SetupChannelsCog", session_no: int, row: int):
+        super().__init__(
+            label=f"セッション{session_no}：個別テキストch作成",
+            style=discord.ButtonStyle.primary,
+            custom_id=f"setup:individual_create:{session_no}",
+            row=row,
+        )
+        self.cog = cog
+        self.session_no = session_no
+
+    async def callback(self, interaction: discord.Interaction):
+        await self.cog.handle_individual_create(interaction, self.session_no)
+
+
+class DeleteView(discord.ui.View):
+    def __init__(self, cog: "SetupChannelsCog", channel_id: int):
+        super().__init__(timeout=None)
+        self.add_item(DeleteButton(cog, channel_id))
+
+
+class DeleteButton(discord.ui.Button):
+    def __init__(self, cog: "SetupChannelsCog", channel_id: int):
+        super().__init__(
+            label="このチャンネルを削除",
+            style=discord.ButtonStyle.danger,
+            custom_id=f"setup:delete:{channel_id}",
+        )
+        self.cog = cog
+        self.channel_id = channel_id
+
+    async def callback(self, interaction: discord.Interaction):
+        await self.cog.handle_delete(interaction, self.channel_id)
+
+
+# -----------------------
+# Cog
+# -----------------------
+class SetupChannelsCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self.db = _load_db()
 
-    @commands.command(name="export")
-    async def export(
-        self,
-        ctx: commands.Context,
-        limit_or_channel: str | None = None,
-        channel: discord.TextChannel | None = None,
-    ):
-        """
-        使い方:
-          !export                 -> 実行したチャンネルをDEFAULT件数で
-          !export 300             -> 実行したチャンネルを300件
-          !export #channel        -> 指定チャンネルをDEFAULT件数
-          !export 300 #channel    -> 指定チャンネルを300件
-        """
-        # ---- 引数解釈 ----
-        limit = DEFAULT_LIMIT
-        target: discord.TextChannel | None = None
+        # 永続View登録
+        self.bot.add_view(SetupView(self))
 
-        if limit_or_channel is None:
-            target = ctx.channel if isinstance(ctx.channel, discord.TextChannel) else None
-        else:
-            if limit_or_channel.isdigit():
-                limit = int(limit_or_channel)
-                target = channel if channel else (ctx.channel if isinstance(ctx.channel, discord.TextChannel) else None)
-            else:
-                # 1つ目がチャンネル指定
-                target = channel
-                if target is None:
-                    m = re.match(r"<#(\d+)>", limit_or_channel)
-                    if m and ctx.guild:
-                        ch = ctx.guild.get_channel(int(m.group(1)))
-                        if isinstance(ch, discord.TextChannel):
-                            target = ch
-                if target is None:
-                    target = ctx.channel if isinstance(ctx.channel, discord.TextChannel) else None
-
-        if not isinstance(target, discord.TextChannel):
-            await ctx.reply("テキストチャンネルで実行してください。例：`!export` / `!export 300` / `!export #general`")
-            return
-
-        # limit調整
-        if limit < 1:
-            limit = 1
-        if limit > MAX_LIMIT:
-            limit = MAX_LIMIT
-
-        # ---- 権限チェック（Botが読めるか）----
-        perms = target.permissions_for(target.guild.me) if target.guild and target.guild.me else None
-        if perms is None or not (perms.view_channel and perms.read_message_history):
-            await ctx.reply(readable_perm_error())
-            return
-        if not perms.attach_files:
-            await ctx.reply("⚠️ Botに Attach Files（ファイル添付）の権限がありません。HTMLを添付できません。")
-            return
-
-        guild_name = ctx.guild.name if ctx.guild else "DM"
-        filename = make_filename(guild_name, target.name)
-
-        # ---- HTML生成（サイズ超過なら件数を減らす）----
-        current = limit
-        while True:
-            msgs: list[discord.Message] = []
+        # 既存削除ボタン復元（shared/individual両対応）
+        for ch_id_str in list(self.db.keys()):
             try:
-                async for m in target.history(limit=current, oldest_first=True):
-                    msgs.append(m)
-            except discord.Forbidden:
-                await ctx.reply(readable_perm_error())
-                return
+                ch_id = int(ch_id_str)
+            except ValueError:
+                continue
+            self.bot.add_view(DeleteView(self, ch_id))
 
-            messages_html = "\n".join(msg_to_html(m) for m in msgs)
-            page = make_html_page(
-                guild_name=guild_name,
-                channel_name=target.name,
-                exported_at=datetime.now(JST).strftime("%Y-%m-%d %H:%M:%S"),
-                messages_html=messages_html,
+    # -----------------
+    # !setup
+    # -----------------
+    @commands.command(name="setup")
+    async def setup_cmd(self, ctx: commands.Context):
+        if config.SETUP_CHANNEL_ID and ctx.channel.id != config.SETUP_CHANNEL_ID:
+            await ctx.reply("このコマンドは専用チャンネルで使用してください。", mention_author=False)
+            return
+
+        embed = discord.Embed(
+            title="セットアップ",
+            description=(
+                "下のボタンで作成できます。\n\n"
+                "【共有】VC参加者全員が閲覧できる共有テキストchを作成（タイトル：セッションN + 日時）\n"
+                "【個別】VC参加者全員ぶん個別テキストchを作成（閲覧：本人 + setup実行者 + 見学ロール）\n\n"
+                "※ すべてのチャンネルに削除ボタンが付きます。"
+            ),
+        )
+        await ctx.send(embed=embed, view=SetupView(self))
+
+    # -----------------
+    # Getters
+    # -----------------
+    def _get_session_vc(self, guild: discord.Guild, session_no: int) -> Optional[discord.VoiceChannel]:
+        vc_id = getattr(config, "SESSION_VC_IDS", {}).get(session_no)
+        ch = guild.get_channel(vc_id) if vc_id else None
+        return ch if isinstance(ch, discord.VoiceChannel) else None
+
+    def _get_spectator_role(self, guild: discord.Guild) -> Optional[discord.Role]:
+        rid = getattr(config, "SPECTATOR_ROLE_ID", None)
+        return guild.get_role(rid) if rid else None
+
+    def _get_shared_category(self, guild: discord.Guild, session_no: int) -> Optional[discord.CategoryChannel]:
+        cid = getattr(config, "SESSION_SHARED_CATEGORY_IDS", {}).get(session_no)
+        ch = guild.get_channel(cid) if cid else None
+        return ch if isinstance(ch, discord.CategoryChannel) else None
+
+    def _get_individual_category(self, guild: discord.Guild, session_no: int) -> Optional[discord.CategoryChannel]:
+        cid = getattr(config, "SESSION_INDIVIDUAL_CATEGORY_IDS", {}).get(session_no)
+        ch = guild.get_channel(cid) if cid else None
+        return ch if isinstance(ch, discord.CategoryChannel) else None
+
+    # -----------------
+    # Shared create
+    # -----------------
+    async def handle_shared_create(self, interaction: discord.Interaction, session_no: int):
+        await interaction.response.defer(ephemeral=True)
+
+        guild = interaction.guild
+        if guild is None:
+            await interaction.followup.send("サーバー内で実行してください。", ephemeral=True)
+            return
+
+        invoker = interaction.user
+        if not isinstance(invoker, discord.Member):
+            await interaction.followup.send("メンバー情報が取得できませんでした。", ephemeral=True)
+            return
+
+        vc = self._get_session_vc(guild, session_no)
+        if vc is None:
+            await interaction.followup.send("セッションVCが見つかりません（ID設定を確認）。", ephemeral=True)
+            return
+
+        vc_members: List[discord.Member] = list(vc.members)
+        if not vc_members:
+            await interaction.followup.send("そのVCに誰もいません。作成できません。", ephemeral=True)
+            return
+
+        category = self._get_shared_category(guild, session_no)
+        if category is None:
+            await interaction.followup.send("共有ch作成先カテゴリが見つかりません（SESSION_SHARED_CATEGORY_IDSを確認）。", ephemeral=True)
+            return
+
+        name = _shared_channel_title(session_no)
+
+        overwrites = {guild.default_role: discord.PermissionOverwrite(view_channel=False)}
+
+        # 実行者がVCに居ないケースも考慮（実運用上便利）
+        overwrites[invoker] = discord.PermissionOverwrite(
+            view_channel=True, read_message_history=True, send_messages=True
+        )
+
+        for m in vc_members:
+            overwrites[m] = discord.PermissionOverwrite(
+                view_channel=True, read_message_history=True, send_messages=True
             )
-            data = page.encode("utf-8")
 
-            if len(data) <= SAFE_MAX_BYTES:
-                file = discord.File(fp=io.BytesIO(data), filename=filename)
-                await ctx.send(f"✅ HTMLログを生成しました（対象: #{target.name} / {current}件）", file=file)
-                return
+        try:
+            text_ch = await guild.create_text_channel(
+                name=name,
+                category=category,
+                overwrites=overwrites,
+                reason=f"setup shared session {session_no} by {invoker}",
+            )
+        except discord.Forbidden:
+            await interaction.followup.send("権限不足で共有テキストchを作成できません。", ephemeral=True)
+            return
 
-            if current <= 50:
-                await ctx.send("⚠️ HTMLが大きすぎて添付できません。件数を減らして `!export 100` などで試してください。")
-                return
+        # DB登録（削除ボタン復元用）
+        self.db[str(text_ch.id)] = {
+            "guild_id": guild.id,
+            "creator_id": invoker.id,
+            "session_no": session_no,
+            "type": "shared",
+        }
+        _save_db(self.db)
+        self.bot.add_view(DeleteView(self, text_ch.id))
 
-            current = max(50, current // 2)
+        embed = discord.Embed(
+            title="共有テキストチャンネル",
+            description=(
+                f"セッション{session_no} / 対象VC：{vc.mention}\n"
+                f"閲覧：VC参加者\n\n"
+                "削除する場合は下のボタンを押してください。"
+            ),
+        )
+        await text_ch.send(embed=embed, view=DeleteView(self, text_ch.id))
 
-# load_extension の入口（必須）
+        await interaction.followup.send(f"✅ 共有テキストchを作成しました：{text_ch.mention}", ephemeral=True)
+
+    # -----------------
+    # Individual create (for every VC member)
+    # -----------------
+    async def handle_individual_create(self, interaction: discord.Interaction, session_no: int):
+        await interaction.response.defer(ephemeral=True)
+
+        guild = interaction.guild
+        if guild is None:
+            await interaction.followup.send("サーバー内で実行してください。", ephemeral=True)
+            return
+
+        invoker = interaction.user
+        if not isinstance(invoker, discord.Member):
+            await interaction.followup.send("メンバー情報が取得できませんでした。", ephemeral=True)
+            return
+
+        vc = self._get_session_vc(guild, session_no)
+        if vc is None:
+            await interaction.followup.send("セッションVCが見つかりません（ID設定を確認）。", ephemeral=True)
+            return
+
+        vc_members: List[discord.Member] = list(vc.members)
+        if not vc_members:
+            await interaction.followup.send("そのVCに誰もいません。作成できません。", ephemeral=True)
+            return
+
+        category = self._get_individual_category(guild, session_no)
+        if category is None:
+            await interaction.followup.send("個別ch作成先カテゴリが見つかりません（SESSION_INDIVIDUAL_CATEGORY_IDSを確認）。", ephemeral=True)
+            return
+
+        spectator = self._get_spectator_role(guild)
+        if spectator is None:
+            await interaction.followup.send("見学ロールが見つかりません（SPECTATOR_ROLE_IDを確認）。", ephemeral=True)
+            return
+
+        created = 0
+        failed: List[str] = []
+
+        for target in vc_members:
+            # ★ここが要件：VCで見えている名前そのまま（display_name）に依存
+            ch_name = _individual_channel_title(target)
+
+            overwrites = {
+                guild.default_role: discord.PermissionOverwrite(view_channel=False),
+
+                # 見学ロール：全員「閲覧できるようにする」
+                spectator: discord.PermissionOverwrite(
+                    view_channel=True, read_message_history=True, send_messages=False
+                ),
+
+                # setup実行者：閲覧＋送信可
+                invoker: discord.PermissionOverwrite(
+                    view_channel=True, read_message_history=True, send_messages=True
+                ),
+
+                # 対象本人：閲覧＋送信可
+                target: discord.PermissionOverwrite(
+                    view_channel=True, read_message_history=True, send_messages=True
+                ),
+            }
+
+            try:
+                text_ch = await guild.create_text_channel(
+                    name=ch_name,
+                    category=category,
+                    overwrites=overwrites,
+                    reason=f"setup individual session {session_no} target {target.id} by {invoker.id}",
+                )
+                created += 1
+
+                # DB登録
+                self.db[str(text_ch.id)] = {
+                    "guild_id": guild.id,
+                    "creator_id": invoker.id,
+                    "session_no": session_no,
+                    "type": "individual",
+                    "target_member_id": target.id,
+                }
+                _save_db(self.db)
+                self.bot.add_view(DeleteView(self, text_ch.id))
+
+                embed = discord.Embed(
+                    title=f"個別テキストチャンネル：{target.display_name}",
+                    description=(
+                        f"セッション{session_no} / 対象VC：{vc.mention}\n"
+                        f"本人：{target.mention}\n"
+                        f"作成者：{invoker.mention}\n"
+                        f"見学：{spectator.mention}（閲覧のみ）\n\n"
+                        "削除する場合は下のボタンを押してください。"
+                    ),
+                )
+                await text_ch.send(embed=embed, view=DeleteView(self, text_ch.id))
+
+            except discord.Forbidden:
+                failed.append(target.display_name)
+            except Exception:
+                failed.append(target.display_name)
+
+        msg = f"✅ 個別テキストchを作成しました（セッション{session_no}）: {created}件"
+        if failed:
+            msg += f"\n⚠ 作成失敗: {', '.join(failed[:10])}" + (" …" if len(failed) > 10 else "")
+
+        await interaction.followup.send(msg, ephemeral=True)
+
+    # -----------------
+    # Delete (all channels)
+    # -----------------
+    async def handle_delete(self, interaction: discord.Interaction, channel_id: int):
+        await interaction.response.defer(ephemeral=True)
+
+        guild = interaction.guild
+        if guild is None:
+            await interaction.followup.send("サーバー内で実行してください。", ephemeral=True)
+            return
+
+        member = interaction.user
+        if not isinstance(member, discord.Member):
+            await interaction.followup.send("メンバー情報が取得できませんでした。", ephemeral=True)
+            return
+
+        ch = guild.get_channel(channel_id)
+        if not isinstance(ch, discord.TextChannel):
+            # DB掃除
+            if str(channel_id) in self.db:
+                self.db.pop(str(channel_id), None)
+                _save_db(self.db)
+            await interaction.followup.send("対象チャンネルが見つかりません（既に削除済みかも）。", ephemeral=True)
+            return
+
+        info = self.db.get(str(channel_id), {})
+        creator_id = info.get("creator_id")
+
+        # 削除できる人：作成者 or 管理者
+        if creator_id != member.id and not _is_adminish(member):
+            await interaction.followup.send("削除できるのは作成者または管理者のみです。", ephemeral=True)
+            return
+
+        try:
+            await ch.delete(reason=f"Deleted by {member} via delete button")
+        except discord.Forbidden:
+            await interaction.followup.send("権限不足で削除できません。", ephemeral=True)
+            return
+
+        self.db.pop(str(channel_id), None)
+        _save_db(self.db)
+
+        await interaction.followup.send("🗑 チャンネルを削除しました。", ephemeral=True)
+
+
 async def setup(bot: commands.Bot):
-    await bot.add_cog(ExportHtmlCog(bot))
+    await bot.add_cog(SetupChannelsCog(bot))
