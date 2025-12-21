@@ -36,14 +36,25 @@ def make_html_page(guild_name: str, channel_name: str, exported_at: str, message
     --name: #f2f3f5;
     --border: rgba(255,255,255,.06);
     --link: #00a8fc;
+
+    /* 通常メンション */
     --mention-bg: rgba(88,101,242,.18);
     --mention-fg: #c9d4ff;
+
+    /* @everyone/@here 専用 */
+    --ping-bg: rgba(250,166,26,.20);
+    --ping-fg: #ffd59a;
+
+    /* 退室済み（解決不能） */
+    --left-bg: rgba(237,66,69,.18);
+    --left-fg: #ffb3b3;
   }}
   body {{
     margin: 0;
     background: #1e1f22;
     color: var(--text);
-    font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans JP", "Hiragino Kaku Gothic ProN", "Yu Gothic", sans-serif;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans JP",
+      "Hiragino Kaku Gothic ProN", "Yu Gothic", sans-serif;
   }}
   .app {{ max-width: 1100px; margin: 0 auto; padding: 24px 12px; }}
   .header {{
@@ -99,13 +110,27 @@ def make_html_page(guild_name: str, channel_name: str, exported_at: str, message
     object-fit: cover;
   }}
 
-  /* ★ Discordっぽいメンション見た目 */
+  /* メンション見た目 */
   .mention {{
     background: var(--mention-bg);
     color: var(--mention-fg);
     padding: 0 6px;
     border-radius: 6px;
     font-weight: 600;
+  }}
+  .mention-ping {{
+    background: var(--ping-bg);
+    color: var(--ping-fg);
+    padding: 0 6px;
+    border-radius: 6px;
+    font-weight: 800;
+  }}
+  .mention-left {{
+    background: var(--left-bg);
+    color: var(--left-fg);
+    padding: 0 6px;
+    border-radius: 6px;
+    font-weight: 700;
   }}
 </style>
 </head>
@@ -124,34 +149,39 @@ def make_html_page(guild_name: str, channel_name: str, exported_at: str, message
 """
 
 def _display_user(guild: discord.Guild | None, user_id: int) -> str:
+    """
+    <@id> を @表示名 に変換。
+    取得できなければ（退室済み等） @退室済み を返す。
+    IDは絶対に出さない。
+    """
     if not guild:
-        return f"@{user_id}"
+        return "@退室済み"
     member = guild.get_member(user_id)
     if member:
         return f"@{member.display_name}"
-    return f"@{user_id}"
+    return "@退室済み"
 
 def _display_role(guild: discord.Guild | None, role_id: int) -> str:
     if not guild:
-        return f"@role:{role_id}"
+        return "@ロール"
     role = guild.get_role(role_id)
     if role:
         return f"@{role.name}"
-    return f"@role:{role_id}"
+    return "@ロール"
 
 def _display_channel(guild: discord.Guild | None, channel_id: int) -> str:
     if not guild:
-        return f"#channel:{channel_id}"
+        return "#チャンネル"
     ch = guild.get_channel(channel_id)
     if ch:
         return f"#{ch.name}"
-    return f"#channel:{channel_id}"
+    return "#チャンネル"
 
 def replace_discord_mentions_to_names(raw: str, guild: discord.Guild | None) -> str:
     """
-    <@123> / <@!123> -> @表示名
-    <@&456> -> @ロール名
-    <#789> -> #チャンネル名
+    <@123> / <@!123> -> @表示名（なければ @退室済み）
+    <@&456> -> @ロール名（なければ @ロール）
+    <#789> -> #チャンネル名（なければ #チャンネル）
     """
     raw = USER_MENTION_RE.sub(lambda m: _display_user(guild, int(m.group(1))), raw)
     raw = ROLE_MENTION_RE.sub(lambda m: _display_role(guild, int(m.group(1))), raw)
@@ -159,18 +189,26 @@ def replace_discord_mentions_to_names(raw: str, guild: discord.Guild | None) -> 
     return raw
 
 def sanitize(text: str, guild: discord.Guild | None) -> str:
-    # 1) 先にDiscord内部メンションを @名前/#名前 に変換
+    # 1) Discord内部メンションを表示名へ
     text = replace_discord_mentions_to_names(text, guild)
 
     # 2) HTMLエスケープ
     esc = html.escape(text)
 
-    # 3) URLリンク化（あなたの元仕様維持：\1を文字列として使う書き方）
+    # 3) URLリンク化（元仕様維持：\1を文字列として使う）
     esc = URL_RE.sub(r'<a href="\\1" target="_blank" rel="noopener noreferrer">\\1</a>', esc)
 
-    # 4) @xxx と #xxx をDiscordっぽくハイライト（“メンション名”として見せる）
-    esc = re.sub(r'(?<![\w/])(@[^\s<]+)', r'<span class="mention">\1</span>', esc)
-    esc = re.sub(r'(?<![\w/])(#\S+)', r'<span class="mention">\1</span>', esc)
+    # 4) @everyone / @here を専用色
+    esc = esc.replace("@everyone", '<span class="mention-ping">@everyone</span>')
+    esc = esc.replace("@here", '<span class="mention-ping">@here</span>')
+
+    # 5) @退室済み を専用色
+    esc = esc.replace("@退室済み", '<span class="mention-left">@退室済み</span>')
+
+    # 6) それ以外の @xxx / #xxx は通常メンション色（ただし、上で置換済みのHTMLタグは避ける）
+    #    "<" の直後で始まる @ を触らない簡易対策： (?<!<) を使う
+    esc = re.sub(r'(?<!<)(?<![\w/])(@[^\s<]+)', r'<span class="mention">\1</span>', esc)
+    esc = re.sub(r'(?<!<)(?<![\w/])(#\S+)', r'<span class="mention">\1</span>', esc)
 
     return esc
 
