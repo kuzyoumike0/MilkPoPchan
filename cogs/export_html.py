@@ -15,6 +15,11 @@ TIME_FORMAT = "%Y-%m-%d %H:%M"
 SAFE_MAX_BYTES = 8 * 1024 * 1024 - 200_000  # 8MB未満に収める安全値
 URL_RE = re.compile(r"(https?://[^\s]+)")
 
+# Discord内部メンション表現
+USER_MENTION_RE = re.compile(r"<@!?(\d+)>")
+ROLE_MENTION_RE = re.compile(r"<@&(\d+)>")
+CHANNEL_MENTION_RE = re.compile(r"<#(\d+)>")
+
 def make_html_page(guild_name: str, channel_name: str, exported_at: str, messages_html: str) -> str:
     return f"""<!doctype html>
 <html lang="ja">
@@ -31,6 +36,8 @@ def make_html_page(guild_name: str, channel_name: str, exported_at: str, message
     --name: #f2f3f5;
     --border: rgba(255,255,255,.06);
     --link: #00a8fc;
+    --mention-bg: rgba(88,101,242,.18);
+    --mention-fg: #c9d4ff;
   }}
   body {{
     margin: 0;
@@ -91,6 +98,15 @@ def make_html_page(guild_name: str, channel_name: str, exported_at: str, message
     border: 1px solid var(--border);
     object-fit: cover;
   }}
+
+  /* ★ Discordっぽいメンション見た目 */
+  .mention {{
+    background: var(--mention-bg);
+    color: var(--mention-fg);
+    padding: 0 6px;
+    border-radius: 6px;
+    font-weight: 600;
+  }}
 </style>
 </head>
 <body>
@@ -107,9 +123,55 @@ def make_html_page(guild_name: str, channel_name: str, exported_at: str, message
 </html>
 """
 
-def sanitize(text: str) -> str:
+def _display_user(guild: discord.Guild | None, user_id: int) -> str:
+    if not guild:
+        return f"@{user_id}"
+    member = guild.get_member(user_id)
+    if member:
+        return f"@{member.display_name}"
+    return f"@{user_id}"
+
+def _display_role(guild: discord.Guild | None, role_id: int) -> str:
+    if not guild:
+        return f"@role:{role_id}"
+    role = guild.get_role(role_id)
+    if role:
+        return f"@{role.name}"
+    return f"@role:{role_id}"
+
+def _display_channel(guild: discord.Guild | None, channel_id: int) -> str:
+    if not guild:
+        return f"#channel:{channel_id}"
+    ch = guild.get_channel(channel_id)
+    if ch:
+        return f"#{ch.name}"
+    return f"#channel:{channel_id}"
+
+def replace_discord_mentions_to_names(raw: str, guild: discord.Guild | None) -> str:
+    """
+    <@123> / <@!123> -> @表示名
+    <@&456> -> @ロール名
+    <#789> -> #チャンネル名
+    """
+    raw = USER_MENTION_RE.sub(lambda m: _display_user(guild, int(m.group(1))), raw)
+    raw = ROLE_MENTION_RE.sub(lambda m: _display_role(guild, int(m.group(1))), raw)
+    raw = CHANNEL_MENTION_RE.sub(lambda m: _display_channel(guild, int(m.group(1))), raw)
+    return raw
+
+def sanitize(text: str, guild: discord.Guild | None) -> str:
+    # 1) 先にDiscord内部メンションを @名前/#名前 に変換
+    text = replace_discord_mentions_to_names(text, guild)
+
+    # 2) HTMLエスケープ
     esc = html.escape(text)
+
+    # 3) URLリンク化（あなたの元仕様維持：\1を文字列として使う書き方）
     esc = URL_RE.sub(r'<a href="\\1" target="_blank" rel="noopener noreferrer">\\1</a>', esc)
+
+    # 4) @xxx と #xxx をDiscordっぽくハイライト（“メンション名”として見せる）
+    esc = re.sub(r'(?<![\w/])(@[^\s<]+)', r'<span class="mention">\1</span>', esc)
+    esc = re.sub(r'(?<![\w/])(#\S+)', r'<span class="mention">\1</span>', esc)
+
     return esc
 
 def msg_to_html(m: discord.Message) -> str:
@@ -118,7 +180,7 @@ def msg_to_html(m: discord.Message) -> str:
     author_name = author.display_name
     time_str = m.created_at.astimezone().strftime(TIME_FORMAT)
 
-    content = sanitize(m.content or "")
+    content = sanitize(m.content or "", m.guild)
 
     attach_html = ""
     if m.attachments:
@@ -156,14 +218,12 @@ def msg_to_html(m: discord.Message) -> str:
 
 def make_filename(channel_name: str) -> str:
     """
-    ダウンロード名を「テキストチャンネル名」にする。
-    同名の上書きを避けるため、末尾にタイムスタンプは付ける。
+    ダウンロード名を「テキストチャンネル名」にする（チャンネル名＋タイムスタンプ）
     """
     def safe(s: str) -> str:
         return re.sub(r"[^\w\-]+", "_", s)
 
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    # 例: general__20251221_100500.html
     return f"{safe(channel_name)}__{stamp}.html"
 
 class ExportHtmlCog(commands.Cog):
@@ -185,7 +245,7 @@ class ExportHtmlCog(commands.Cog):
             limit = MAX_LIMIT
 
         guild_name = ctx.guild.name if ctx.guild else "DM"
-        filename = make_filename(channel.name)  # ★ここが変更点（チャンネル名ベース）
+        filename = make_filename(channel.name)
 
         # サイズ超過なら自動で件数を減らす
         current = limit
