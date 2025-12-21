@@ -54,20 +54,30 @@ def _shared_channel_title(session_no: int) -> str:
 
 
 def _safe_name_for_channel(s: str) -> str:
+    """
+    Discordチャンネル名に安全に収まるように軽く整形。
+    display_name を元にするので、空白→-、一部記号除去、長さ制限。
+    """
     s = s.strip()
     s = s.replace(" ", "-").replace("/", "-").replace("\\", "-")
     for ch in ["@", "#", ":", ",", ".", "。", "、", "’", "'", "\"", "“", "”",
                "(", ")", "[", "]", "{", "}", "!", "?", "？"]:
         s = s.replace(ch, "")
+
     while "--" in s:
         s = s.replace("--", "-")
+
     if not s:
         s = "user"
+
     return s[:80]
 
 
 def _individual_channel_title(member: discord.Member) -> str:
-    # VCで見えている名前(display_name)のみ（prefix等は付けない）
+    """
+    個別テキストチャンネル名は「VCで見えている名前(display_name)」のみに依存。
+    プレフィックス、セッション番号は付けない。
+    """
     return _safe_name_for_channel(member.display_name)
 
 
@@ -75,6 +85,7 @@ def _individual_channel_title(member: discord.Member) -> str:
 # Views
 # -----------------------
 class SetupView(discord.ui.View):
+    """!setup 後のボタン群（セッション別：共有作成／個別作成）"""
     def __init__(self, cog: "SetupChannelsCog"):
         super().__init__(timeout=None)
         self.cog = cog
@@ -169,7 +180,8 @@ class SetupChannelsCog(commands.Cog):
             description=(
                 "下のボタンで作成できます。\n\n"
                 "【共有】VC参加者全員＋見学ロールが閲覧/チャットできる共有テキストchを作成（タイトル：セッションN + 日時）\n"
-                "【個別】VC参加者全員ぶん個別テキストchを作成（閲覧/チャット：本人 + setup実行者 + 見学ロール）\n\n"
+                "【個別】VC参加者全員ぶん個別テキストchを作成（閲覧/チャット：本人 + setup実行者 + 見学ロール）\n"
+                "　※ VC表示名が同じ人がいた場合は「同じチャンネルに統合」します。\n\n"
                 "※ すべてのチャンネルに削除ボタンが付きます。"
             ),
         )
@@ -234,7 +246,7 @@ class SetupChannelsCog(commands.Cog):
 
         overwrites = {guild.default_role: discord.PermissionOverwrite(view_channel=False)}
 
-        # 見学ロール：閲覧/チャット可（ここが変更点）
+        # 見学ロール：閲覧/チャット可
         overwrites[spectator] = discord.PermissionOverwrite(
             view_channel=True, read_message_history=True, send_messages=True
         )
@@ -283,7 +295,7 @@ class SetupChannelsCog(commands.Cog):
         await interaction.followup.send(f"✅ 共有テキストchを作成しました：{text_ch.mention}", ephemeral=True)
 
     # -----------------
-    # Individual create
+    # Individual create (同名衝突 → 同一チャンネルに統合)
     # -----------------
     async def handle_individual_create(self, interaction: discord.Interaction, session_no: int):
         await interaction.response.defer(ephemeral=True)
@@ -319,54 +331,90 @@ class SetupChannelsCog(commands.Cog):
             return
 
         created = 0
+        merged = 0
         failed: List[str] = []
 
         for target in vc_members:
-            ch_name = _individual_channel_title(target)  # display_name由来
+            # VC表示名依存のチャンネル名
+            ch_name = _individual_channel_title(target)
 
-            overwrites = {
-                guild.default_role: discord.PermissionOverwrite(view_channel=False),
-
-                # 見学ロール：閲覧/チャット可（ここが変更点）
-                spectator: discord.PermissionOverwrite(
-                    view_channel=True, read_message_history=True, send_messages=True
-                ),
-
-                # setup実行者：閲覧/チャット可
-                invoker: discord.PermissionOverwrite(
-                    view_channel=True, read_message_history=True, send_messages=True
-                ),
-
-                # 対象本人：閲覧/チャット可
-                target: discord.PermissionOverwrite(
-                    view_channel=True, read_message_history=True, send_messages=True
-                ),
-            }
+            # ★同名衝突を「統合」にする：既存があればそれを使う
+            existing = discord.utils.get(guild.text_channels, name=ch_name, category=category)
 
             try:
-                text_ch = await guild.create_text_channel(
-                    name=ch_name,
-                    category=category,
-                    overwrites=overwrites,
-                    reason=f"setup individual session {session_no} target {target.id} by {invoker.id}",
-                )
-                created += 1
+                if existing:
+                    # 既存の上書きに target を追加（既存の許可を壊さないように update）
+                    overwrites = dict(existing.overwrites)
 
-                self.db[str(text_ch.id)] = {
-                    "guild_id": guild.id,
-                    "creator_id": invoker.id,
-                    "session_no": session_no,
-                    "type": "individual",
-                    "target_member_id": target.id,
-                }
+                    overwrites[guild.default_role] = discord.PermissionOverwrite(view_channel=False)
+
+                    # 見学：閲覧/チャット可
+                    overwrites[spectator] = discord.PermissionOverwrite(
+                        view_channel=True, read_message_history=True, send_messages=True
+                    )
+
+                    # setup実行者：閲覧/チャット可
+                    overwrites[invoker] = discord.PermissionOverwrite(
+                        view_channel=True, read_message_history=True, send_messages=True
+                    )
+
+                    # 追加対象：閲覧/チャット可
+                    overwrites[target] = discord.PermissionOverwrite(
+                        view_channel=True, read_message_history=True, send_messages=True
+                    )
+
+                    await existing.edit(overwrites=overwrites, reason="merge same-name individual channel")
+                    text_ch = existing
+                    merged += 1
+                else:
+                    overwrites = {
+                        guild.default_role: discord.PermissionOverwrite(view_channel=False),
+                        spectator: discord.PermissionOverwrite(
+                            view_channel=True, read_message_history=True, send_messages=True
+                        ),
+                        invoker: discord.PermissionOverwrite(
+                            view_channel=True, read_message_history=True, send_messages=True
+                        ),
+                        target: discord.PermissionOverwrite(
+                            view_channel=True, read_message_history=True, send_messages=True
+                        ),
+                    }
+
+                    text_ch = await guild.create_text_channel(
+                        name=ch_name,
+                        category=category,
+                        overwrites=overwrites,
+                        reason=f"setup individual session {session_no} target {target.id} by {invoker.id}",
+                    )
+                    created += 1
+
+                # DB登録（target_member_ids を配列で保持して統合を追跡）
+                rec = self.db.get(str(text_ch.id))
+                if not rec:
+                    rec = {
+                        "guild_id": guild.id,
+                        "creator_id": invoker.id,
+                        "session_no": session_no,
+                        "type": "individual",
+                        "target_member_ids": [],
+                    }
+                    self.db[str(text_ch.id)] = rec
+
+                # creator_id は最初の作成者を基本とする（統合時は変えない）
+                ids = rec.get("target_member_ids", [])
+                if target.id not in ids:
+                    ids.append(target.id)
+                    rec["target_member_ids"] = ids
+
                 _save_db(self.db)
                 self.bot.add_view(DeleteView(self, text_ch.id))
 
+                # 案内投稿（統合チャンネルでは「追加したよ」でもOK）
                 embed = discord.Embed(
-                    title=f"個別テキストチャンネル：{target.display_name}",
+                    title=f"個別テキストチャンネル：{text_ch.name}",
                     description=(
                         f"セッション{session_no} / 対象VC：{vc.mention}\n"
-                        f"本人：{target.mention}\n"
+                        f"追加：{target.mention}\n"
                         f"作成者：{invoker.mention}\n"
                         f"見学：{spectator.mention}（閲覧/チャット可）\n\n"
                         "削除する場合は下のボタンを押してください。"
@@ -379,14 +427,17 @@ class SetupChannelsCog(commands.Cog):
             except Exception:
                 failed.append(target.display_name)
 
-        msg = f"✅ 個別テキストchを作成しました（セッション{session_no}）: {created}件"
+        msg = (
+            f"✅ 個別テキストch処理完了（セッション{session_no}）\n"
+            f"新規作成: {created} / 統合(既存に追加): {merged}"
+        )
         if failed:
-            msg += f"\n⚠ 作成失敗: {', '.join(failed[:10])}" + (" …" if len(failed) > 10 else "")
+            msg += f"\n⚠ 失敗: {', '.join(failed[:10])}" + (" …" if len(failed) > 10 else "")
 
         await interaction.followup.send(msg, ephemeral=True)
 
     # -----------------
-    # Delete
+    # Delete (all channels)
     # -----------------
     async def handle_delete(self, interaction: discord.Interaction, channel_id: int):
         await interaction.response.defer(ephemeral=True)
@@ -424,6 +475,7 @@ class SetupChannelsCog(commands.Cog):
 
         self.db.pop(str(channel_id), None)
         _save_db(self.db)
+
         await interaction.followup.send("🗑 チャンネルを削除しました。", ephemeral=True)
 
 
