@@ -211,3 +211,6 @@ class ExportHtmlCog(commands.Cog):
 # ★ これが必須：load_extension で読み込む入口
 async def setup(bot: commands.Bot):
     await bot.add_cog(ExportHtmlCog(bot))
+
+    
+
