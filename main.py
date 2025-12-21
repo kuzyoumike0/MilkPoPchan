@@ -11,14 +11,19 @@ COG_LIST = [
 
 def build_intents() -> discord.Intents:
     intents = discord.Intents.default()
-    intents.message_content = True  # !export / !mkchannel 用
-    intents.members = True          # ★オフラインメンバーも含めて取得するため
+    intents.message_content = True
+    intents.members = True
     return intents
 
 class MyBot(commands.Bot):
     async def setup_hook(self) -> None:
         for ext in COG_LIST:
-            await self.load_extension(ext)
+            try:
+                await self.load_extension(ext)
+                print(f"[OK] Loaded extension: {ext}")
+            except Exception as e:
+                print(f"[NG] Failed to load extension: {ext} -> {type(e).__name__}: {e}")
+                raise  # 起動を止めて原因をログに残す
 
 async def main():
     if not config.TOKEN:
