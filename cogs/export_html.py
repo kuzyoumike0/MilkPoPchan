@@ -12,9 +12,7 @@ DEFAULT_LIMIT = 200
 MAX_LIMIT = 5000
 TIME_FORMAT = "%Y-%m-%d %H:%M"
 
-# Discord無料枠想定の安全サイズ（だいたい 8MB 未満）
-SAFE_MAX_BYTES = 8 * 1024 * 1024 - 200_000
-
+SAFE_MAX_BYTES = 8 * 1024 * 1024 - 200_000  # 8MB未満に収める安全値
 URL_RE = re.compile(r"(https?://[^\s]+)")
 
 def make_html_page(guild_name: str, channel_name: str, exported_at: str, messages_html: str) -> str:
@@ -33,7 +31,6 @@ def make_html_page(guild_name: str, channel_name: str, exported_at: str, message
     --name: #f2f3f5;
     --border: rgba(255,255,255,.06);
     --link: #00a8fc;
-    --code: #1e1f22;
   }}
   body {{
     margin: 0;
@@ -169,6 +166,7 @@ class ExportHtmlCog(commands.Cog):
 
     @commands.command(name="export")
     async def export(self, ctx: commands.Context, limit: int = DEFAULT_LIMIT):
+        """!export [件数]：実行したチャンネルのログをHTMLにして添付で返す"""
         if not isinstance(ctx.channel, discord.TextChannel):
             await ctx.reply("テキストチャンネルで実行してください。")
             return
@@ -179,12 +177,6 @@ class ExportHtmlCog(commands.Cog):
             limit = 1
         if limit > MAX_LIMIT:
             limit = MAX_LIMIT
-
-        # 生成中メッセージ（不要なら消してOK）
-        try:
-            await ctx.reply("📄 HTMLを生成中…")
-        except discord.HTTPException:
-            pass
 
         guild_name = ctx.guild.name if ctx.guild else "DM"
         filename = make_filename(guild_name, channel.name)
@@ -211,4 +203,11 @@ class ExportHtmlCog(commands.Cog):
                 return
 
             if current <= 50:
-                a
+                await ctx.send("⚠️ HTMLが大きすぎて添付できません。`!export 100` など件数を減らして試してください。")
+                return
+
+            current = max(50, current // 2)
+
+# ★ これが必須：load_extension で読み込む入口
+async def setup(bot: commands.Bot):
+    await bot.add_cog(ExportHtmlCog(bot))
