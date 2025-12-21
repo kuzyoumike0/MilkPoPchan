@@ -49,34 +49,49 @@ def _is_adminish(member: discord.Member) -> bool:
 # Naming
 # -----------------------
 def _shared_channel_title(session_no: int) -> str:
+    # 例: session1-2025-12-21-1030
     now = datetime.now(JST)
     return f"session{session_no}-{now:%Y-%m-%d-%H%M}"
 
 
 def _safe_name_for_channel(s: str) -> str:
-    s = s.strip().lower()
+    """
+    Discordチャンネル名に安全に収まるように軽く整形。
+    display_name を元にするので、空白→-、一部記号除去、長さ制限。
+    """
+    s = s.strip()
+    # ここでは lower() しない（元の見た目を尊重したい気持ちはあるが、
+    # Discord側が最終的に小文字へ寄せるので、挙動差を減らすためこのまま）
     s = s.replace(" ", "-").replace("/", "-").replace("\\", "-")
-    for ch in ["@", "#", ":", ",", ".", "。", "、", "’", "'", "\"", "“", "”", "(", ")", "[", "]", "{", "}", "!", "?", "？"]:
+
+    # 記号をざっくり除去（必要なら追加）
+    for ch in ["@", "#", ":", ",", ".", "。", "、", "’", "'", "\"", "“", "”",
+               "(", ")", "[", "]", "{", "}", "!", "?", "？"]:
         s = s.replace(ch, "")
+
     while "--" in s:
         s = s.replace("--", "-")
-    return (s or "user")[:80]
+
+    if not s:
+        s = "user"
+
+    # Discordのチャンネル名は最大100文字程度だが余裕をみる
+    return s[:80]
 
 
-def _individual_channel_title(session_no: int, member: discord.Member) -> str:
+def _individual_channel_title(member: discord.Member) -> str:
     """
-    個別テキストチャンネル名
-    → VCに表示されているユーザ名（display_name）に依存
+    個別テキストチャンネル名は「VCで見えている名前(display_name)」のみに依存。
+    プレフィックス、セッション番号は付けない。
     """
-    prefix = getattr(config, "INDIVIDUAL_PREFIX", "個別")
-    uname = _safe_name_for_channel(member.display_name)
-    return f"{prefix}-s{session_no}-{uname}"
+    return _safe_name_for_channel(member.display_name)
 
 
 # -----------------------
 # Views
 # -----------------------
 class SetupView(discord.ui.View):
+    """!setup 後のボタン群（セッション別：共有作成／個別作成）"""
     def __init__(self, cog: "SetupChannelsCog"):
         super().__init__(timeout=None)
         self.cog = cog
@@ -92,7 +107,7 @@ class SetupView(discord.ui.View):
 
 
 class SharedCreateButton(discord.ui.Button):
-    def __init__(self, cog, session_no: int, row: int):
+    def __init__(self, cog: "SetupChannelsCog", session_no: int, row: int):
         super().__init__(
             label=f"セッション{session_no}：共有テキストch作成",
             style=discord.ButtonStyle.secondary,
@@ -107,7 +122,7 @@ class SharedCreateButton(discord.ui.Button):
 
 
 class IndividualCreateButton(discord.ui.Button):
-    def __init__(self, cog, session_no: int, row: int):
+    def __init__(self, cog: "SetupChannelsCog", session_no: int, row: int):
         super().__init__(
             label=f"セッション{session_no}：個別テキストch作成",
             style=discord.ButtonStyle.primary,
@@ -122,13 +137,13 @@ class IndividualCreateButton(discord.ui.Button):
 
 
 class DeleteView(discord.ui.View):
-    def __init__(self, cog, channel_id: int):
+    def __init__(self, cog: "SetupChannelsCog", channel_id: int):
         super().__init__(timeout=None)
         self.add_item(DeleteButton(cog, channel_id))
 
 
 class DeleteButton(discord.ui.Button):
-    def __init__(self, cog, channel_id: int):
+    def __init__(self, cog: "SetupChannelsCog", channel_id: int):
         super().__init__(
             label="このチャンネルを削除",
             style=discord.ButtonStyle.danger,
@@ -149,25 +164,286 @@ class SetupChannelsCog(commands.Cog):
         self.bot = bot
         self.db = _load_db()
 
+        # 永続View登録
         self.bot.add_view(SetupView(self))
-        for ch_id in list(self.db.keys()):
-            self.bot.add_view(DeleteView(self, int(ch_id)))
 
+        # 既存削除ボタン復元（shared/individual両対応）
+        for ch_id_str in list(self.db.keys()):
+            try:
+                ch_id = int(ch_id_str)
+            except ValueError:
+                continue
+            self.bot.add_view(DeleteView(self, ch_id))
+
+    # -----------------
+    # !setup
+    # -----------------
     @commands.command(name="setup")
     async def setup_cmd(self, ctx: commands.Context):
+        if config.SETUP_CHANNEL_ID and ctx.channel.id != config.SETUP_CHANNEL_ID:
+            await ctx.reply("このコマンドは専用チャンネルで使用してください。", mention_author=False)
+            return
+
         embed = discord.Embed(
             title="セットアップ",
             description=(
-                "【共有】VC参加者全員が閲覧できる共有テキストchを作成\n"
-                "【個別】VC参加者全員分の個別テキストchを作成\n\n"
-                "※ 個別チャンネル名は VCに表示されているユーザ名 に依存します\n"
-                "※ すべて削除ボタン付き"
+                "下のボタンで作成できます。\n\n"
+                "【共有】VC参加者全員が閲覧できる共有テキストchを作成（タイトル：セッションN + 日時）\n"
+                "【個別】VC参加者全員ぶん個別テキストchを作成（閲覧：本人 + setup実行者 + 見学ロール）\n\n"
+                "※ すべてのチャンネルに削除ボタンが付きます。"
             ),
         )
         await ctx.send(embed=embed, view=SetupView(self))
 
-    # 以下のロジック（共有作成 / 個別作成 / 削除）は
-    # 直前に渡したコードから一切変更していません
-    # （チャンネル名生成のみ display_name に変更）
+    # -----------------
+    # Getters
+    # -----------------
+    def _get_session_vc(self, guild: discord.Guild, session_no: int) -> Optional[discord.VoiceChannel]:
+        vc_id = getattr(config, "SESSION_VC_IDS", {}).get(session_no)
+        ch = guild.get_channel(vc_id) if vc_id else None
+        return ch if isinstance(ch, discord.VoiceChannel) else None
 
-    # ※ 省略せずそのまま動作します
+    def _get_spectator_role(self, guild: discord.Guild) -> Optional[discord.Role]:
+        rid = getattr(config, "SPECTATOR_ROLE_ID", None)
+        return guild.get_role(rid) if rid else None
+
+    def _get_shared_category(self, guild: discord.Guild, session_no: int) -> Optional[discord.CategoryChannel]:
+        cid = getattr(config, "SESSION_SHARED_CATEGORY_IDS", {}).get(session_no)
+        ch = guild.get_channel(cid) if cid else None
+        return ch if isinstance(ch, discord.CategoryChannel) else None
+
+    def _get_individual_category(self, guild: discord.Guild, session_no: int) -> Optional[discord.CategoryChannel]:
+        cid = getattr(config, "SESSION_INDIVIDUAL_CATEGORY_IDS", {}).get(session_no)
+        ch = guild.get_channel(cid) if cid else None
+        return ch if isinstance(ch, discord.CategoryChannel) else None
+
+    # -----------------
+    # Shared create
+    # -----------------
+    async def handle_shared_create(self, interaction: discord.Interaction, session_no: int):
+        await interaction.response.defer(ephemeral=True)
+
+        guild = interaction.guild
+        if guild is None:
+            await interaction.followup.send("サーバー内で実行してください。", ephemeral=True)
+            return
+
+        invoker = interaction.user
+        if not isinstance(invoker, discord.Member):
+            await interaction.followup.send("メンバー情報が取得できませんでした。", ephemeral=True)
+            return
+
+        vc = self._get_session_vc(guild, session_no)
+        if vc is None:
+            await interaction.followup.send("セッションVCが見つかりません（ID設定を確認）。", ephemeral=True)
+            return
+
+        vc_members: List[discord.Member] = list(vc.members)
+        if not vc_members:
+            await interaction.followup.send("そのVCに誰もいません。作成できません。", ephemeral=True)
+            return
+
+        category = self._get_shared_category(guild, session_no)
+        if category is None:
+            await interaction.followup.send("共有ch作成先カテゴリが見つかりません（SESSION_SHARED_CATEGORY_IDSを確認）。", ephemeral=True)
+            return
+
+        name = _shared_channel_title(session_no)
+
+        overwrites = {guild.default_role: discord.PermissionOverwrite(view_channel=False)}
+
+        # 実行者がVCに居ないケースも考慮（実運用上便利）
+        overwrites[invoker] = discord.PermissionOverwrite(
+            view_channel=True, read_message_history=True, send_messages=True
+        )
+
+        for m in vc_members:
+            overwrites[m] = discord.PermissionOverwrite(
+                view_channel=True, read_message_history=True, send_messages=True
+            )
+
+        try:
+            text_ch = await guild.create_text_channel(
+                name=name,
+                category=category,
+                overwrites=overwrites,
+                reason=f"setup shared session {session_no} by {invoker}",
+            )
+        except discord.Forbidden:
+            await interaction.followup.send("権限不足で共有テキストchを作成できません。", ephemeral=True)
+            return
+
+        # DB登録（削除ボタン復元用）
+        self.db[str(text_ch.id)] = {
+            "guild_id": guild.id,
+            "creator_id": invoker.id,
+            "session_no": session_no,
+            "type": "shared",
+        }
+        _save_db(self.db)
+        self.bot.add_view(DeleteView(self, text_ch.id))
+
+        embed = discord.Embed(
+            title="共有テキストチャンネル",
+            description=(
+                f"セッション{session_no} / 対象VC：{vc.mention}\n"
+                f"閲覧：VC参加者\n\n"
+                "削除する場合は下のボタンを押してください。"
+            ),
+        )
+        await text_ch.send(embed=embed, view=DeleteView(self, text_ch.id))
+
+        await interaction.followup.send(f"✅ 共有テキストchを作成しました：{text_ch.mention}", ephemeral=True)
+
+    # -----------------
+    # Individual create (for every VC member)
+    # -----------------
+    async def handle_individual_create(self, interaction: discord.Interaction, session_no: int):
+        await interaction.response.defer(ephemeral=True)
+
+        guild = interaction.guild
+        if guild is None:
+            await interaction.followup.send("サーバー内で実行してください。", ephemeral=True)
+            return
+
+        invoker = interaction.user
+        if not isinstance(invoker, discord.Member):
+            await interaction.followup.send("メンバー情報が取得できませんでした。", ephemeral=True)
+            return
+
+        vc = self._get_session_vc(guild, session_no)
+        if vc is None:
+            await interaction.followup.send("セッションVCが見つかりません（ID設定を確認）。", ephemeral=True)
+            return
+
+        vc_members: List[discord.Member] = list(vc.members)
+        if not vc_members:
+            await interaction.followup.send("そのVCに誰もいません。作成できません。", ephemeral=True)
+            return
+
+        category = self._get_individual_category(guild, session_no)
+        if category is None:
+            await interaction.followup.send("個別ch作成先カテゴリが見つかりません（SESSION_INDIVIDUAL_CATEGORY_IDSを確認）。", ephemeral=True)
+            return
+
+        spectator = self._get_spectator_role(guild)
+        if spectator is None:
+            await interaction.followup.send("見学ロールが見つかりません（SPECTATOR_ROLE_IDを確認）。", ephemeral=True)
+            return
+
+        created = 0
+        failed: List[str] = []
+
+        for target in vc_members:
+            # ★ここが要件：VCで見えている名前そのまま（display_name）に依存
+            ch_name = _individual_channel_title(target)
+
+            overwrites = {
+                guild.default_role: discord.PermissionOverwrite(view_channel=False),
+
+                # 見学ロール：全員「閲覧できるようにする」
+                spectator: discord.PermissionOverwrite(
+                    view_channel=True, read_message_history=True, send_messages=False
+                ),
+
+                # setup実行者：閲覧＋送信可
+                invoker: discord.PermissionOverwrite(
+                    view_channel=True, read_message_history=True, send_messages=True
+                ),
+
+                # 対象本人：閲覧＋送信可
+                target: discord.PermissionOverwrite(
+                    view_channel=True, read_message_history=True, send_messages=True
+                ),
+            }
+
+            try:
+                text_ch = await guild.create_text_channel(
+                    name=ch_name,
+                    category=category,
+                    overwrites=overwrites,
+                    reason=f"setup individual session {session_no} target {target.id} by {invoker.id}",
+                )
+                created += 1
+
+                # DB登録
+                self.db[str(text_ch.id)] = {
+                    "guild_id": guild.id,
+                    "creator_id": invoker.id,
+                    "session_no": session_no,
+                    "type": "individual",
+                    "target_member_id": target.id,
+                }
+                _save_db(self.db)
+                self.bot.add_view(DeleteView(self, text_ch.id))
+
+                embed = discord.Embed(
+                    title=f"個別テキストチャンネル：{target.display_name}",
+                    description=(
+                        f"セッション{session_no} / 対象VC：{vc.mention}\n"
+                        f"本人：{target.mention}\n"
+                        f"作成者：{invoker.mention}\n"
+                        f"見学：{spectator.mention}（閲覧のみ）\n\n"
+                        "削除する場合は下のボタンを押してください。"
+                    ),
+                )
+                await text_ch.send(embed=embed, view=DeleteView(self, text_ch.id))
+
+            except discord.Forbidden:
+                failed.append(target.display_name)
+            except Exception:
+                failed.append(target.display_name)
+
+        msg = f"✅ 個別テキストchを作成しました（セッション{session_no}）: {created}件"
+        if failed:
+            msg += f"\n⚠ 作成失敗: {', '.join(failed[:10])}" + (" …" if len(failed) > 10 else "")
+
+        await interaction.followup.send(msg, ephemeral=True)
+
+    # -----------------
+    # Delete (all channels)
+    # -----------------
+    async def handle_delete(self, interaction: discord.Interaction, channel_id: int):
+        await interaction.response.defer(ephemeral=True)
+
+        guild = interaction.guild
+        if guild is None:
+            await interaction.followup.send("サーバー内で実行してください。", ephemeral=True)
+            return
+
+        member = interaction.user
+        if not isinstance(member, discord.Member):
+            await interaction.followup.send("メンバー情報が取得できませんでした。", ephemeral=True)
+            return
+
+        ch = guild.get_channel(channel_id)
+        if not isinstance(ch, discord.TextChannel):
+            # DB掃除
+            if str(channel_id) in self.db:
+                self.db.pop(str(channel_id), None)
+                _save_db(self.db)
+            await interaction.followup.send("対象チャンネルが見つかりません（既に削除済みかも）。", ephemeral=True)
+            return
+
+        info = self.db.get(str(channel_id), {})
+        creator_id = info.get("creator_id")
+
+        # 削除できる人：作成者 or 管理者
+        if creator_id != member.id and not _is_adminish(member):
+            await interaction.followup.send("削除できるのは作成者または管理者のみです。", ephemeral=True)
+            return
+
+        try:
+            await ch.delete(reason=f"Deleted by {member} via delete button")
+        except discord.Forbidden:
+            await interaction.followup.send("権限不足で削除できません。", ephemeral=True)
+            return
+
+        self.db.pop(str(channel_id), None)
+        _save_db(self.db)
+
+        await interaction.followup.send("🗑 チャンネルを削除しました。", ephemeral=True)
+
+
+async def setup(bot: commands.Bot):
+    await bot.add_cog(SetupChannelsCog(bot))
