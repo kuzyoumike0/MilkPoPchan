@@ -20,6 +20,7 @@ USER_MENTION_RE = re.compile(r"<@!?(\d+)>")
 ROLE_MENTION_RE = re.compile(r"<@&(\d+)>")
 CHANNEL_MENTION_RE = re.compile(r"<#(\d+)>")
 
+
 def make_html_page(guild_name: str, channel_name: str, exported_at: str, messages_html: str) -> str:
     return f"""<!doctype html>
 <html lang="ja">
@@ -44,11 +45,8 @@ def make_html_page(guild_name: str, channel_name: str, exported_at: str, message
     /* @everyone/@here 専用 */
     --ping-bg: rgba(250,166,26,.20);
     --ping-fg: #ffd59a;
-
-    /* 退室済み（解決不能） */
-    --left-bg: rgba(237,66,69,.18);
-    --left-fg: #ffb3b3;
   }}
+
   body {{
     margin: 0;
     background: #1e1f22;
@@ -56,7 +54,9 @@ def make_html_page(guild_name: str, channel_name: str, exported_at: str, message
     font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans JP",
       "Hiragino Kaku Gothic ProN", "Yu Gothic", sans-serif;
   }}
+
   .app {{ max-width: 1100px; margin: 0 auto; padding: 24px 12px; }}
+
   .header {{
     background: var(--panel);
     border: 1px solid var(--border);
@@ -64,15 +64,18 @@ def make_html_page(guild_name: str, channel_name: str, exported_at: str, message
     padding: 14px 16px;
     margin-bottom: 12px;
   }}
+
   .title {{ font-size: 14px; color: var(--muted); }}
   .title strong {{ color: var(--name); font-weight: 700; }}
   .meta {{ font-size: 12px; margin-top: 6px; color: var(--muted); }}
+
   .chat {{
     background: var(--bg);
     border: 1px solid var(--border);
     border-radius: 12px;
     overflow: hidden;
   }}
+
   .msg {{
     display: grid;
     grid-template-columns: 44px 1fr;
@@ -81,6 +84,7 @@ def make_html_page(guild_name: str, channel_name: str, exported_at: str, message
     border-top: 1px solid var(--border);
   }}
   .msg:first-child {{ border-top: none; }}
+
   .avatar {{
     width: 40px;
     height: 40px;
@@ -89,9 +93,11 @@ def make_html_page(guild_name: str, channel_name: str, exported_at: str, message
     background: #111;
     border: 1px solid var(--border);
   }}
+
   .line1 {{ display: flex; align-items: baseline; gap: 8px; }}
   .author {{ color: var(--name); font-weight: 700; font-size: 14px; }}
   .time {{ color: var(--muted); font-size: 12px; }}
+
   .content {{
     margin-top: 2px;
     font-size: 14px;
@@ -99,8 +105,10 @@ def make_html_page(guild_name: str, channel_name: str, exported_at: str, message
     white-space: pre-wrap;
     word-break: break-word;
   }}
+
   a {{ color: var(--link); text-decoration: none; }}
   a:hover {{ text-decoration: underline; }}
+
   .attach {{ margin-top: 8px; display: flex; flex-wrap: wrap; gap: 8px; }}
   .attach img {{
     max-width: 360px;
@@ -110,7 +118,7 @@ def make_html_page(guild_name: str, channel_name: str, exported_at: str, message
     object-fit: cover;
   }}
 
-  /* メンション見た目 */
+  /* 通常メンション（@表示名 / #チャンネル / @ロールなど） */
   .mention {{
     background: var(--mention-bg);
     color: var(--mention-fg);
@@ -118,19 +126,14 @@ def make_html_page(guild_name: str, channel_name: str, exported_at: str, message
     border-radius: 6px;
     font-weight: 600;
   }}
+
+  /* @everyone / @here 専用 */
   .mention-ping {{
     background: var(--ping-bg);
     color: var(--ping-fg);
     padding: 0 6px;
     border-radius: 6px;
     font-weight: 800;
-  }}
-  .mention-left {{
-    background: var(--left-bg);
-    color: var(--left-fg);
-    padding: 0 6px;
-    border-radius: 6px;
-    font-weight: 700;
   }}
 </style>
 </head>
@@ -148,69 +151,77 @@ def make_html_page(guild_name: str, channel_name: str, exported_at: str, message
 </html>
 """
 
+
 def _display_user(guild: discord.Guild | None, user_id: int) -> str:
     """
-    <@id> を @表示名 に変換。
-    取得できなければ（退室済み等） @退室済み を返す。
-    IDは絶対に出さない。
+    <@id> / <@!id> を @表示名 に変換。
+    現在サーバー内にいない（取得不能）場合は「表示しない」（空文字）。
+    ※ IDは絶対に出さない。
     """
     if not guild:
-        return "@退室済み"
+        return ""
+
     member = guild.get_member(user_id)
     if member:
         return f"@{member.display_name}"
-    return "@退室済み"
+
+    # 退室済み/取得不能：何も出さない
+    return ""
+
 
 def _display_role(guild: discord.Guild | None, role_id: int) -> str:
+    # ロールが取れない場合は、IDを出さず、無難なテキストにする
     if not guild:
         return "@ロール"
     role = guild.get_role(role_id)
-    if role:
-        return f"@{role.name}"
-    return "@ロール"
+    return f"@{role.name}" if role else "@ロール"
+
 
 def _display_channel(guild: discord.Guild | None, channel_id: int) -> str:
+    # チャンネルが取れない場合も、IDは出さない
     if not guild:
         return "#チャンネル"
     ch = guild.get_channel(channel_id)
-    if ch:
-        return f"#{ch.name}"
-    return "#チャンネル"
+    return f"#{ch.name}" if ch else "#チャンネル"
+
 
 def replace_discord_mentions_to_names(raw: str, guild: discord.Guild | None) -> str:
     """
-    <@123> / <@!123> -> @表示名（なければ @退室済み）
-    <@&456> -> @ロール名（なければ @ロール）
-    <#789> -> #チャンネル名（なければ #チャンネル）
+    <@123>/<@!123> -> @表示名（取れない場合は空文字）
+    <@&456> -> @ロール名（取れない場合は @ロール）
+    <#789> -> #チャンネル名（取れない場合は #チャンネル）
     """
     raw = USER_MENTION_RE.sub(lambda m: _display_user(guild, int(m.group(1))), raw)
     raw = ROLE_MENTION_RE.sub(lambda m: _display_role(guild, int(m.group(1))), raw)
     raw = CHANNEL_MENTION_RE.sub(lambda m: _display_channel(guild, int(m.group(1))), raw)
     return raw
 
+
 def sanitize(text: str, guild: discord.Guild | None) -> str:
-    # 1) Discord内部メンションを表示名へ
+    # 1) Discord内部メンションを表示名へ（取れないユーザーは空文字）
     text = replace_discord_mentions_to_names(text, guild)
 
-    # 2) HTMLエスケープ
+    # 2) 退室済み等で空文字が混ざるので、目立つ崩れを抑える（軽く整形）
+    #    ※ 行頭・行末はそのまま、連続スペースだけ詰める
+    text = re.sub(r"[ \t]{2,}", " ", text)
+
+    # 3) HTMLエスケープ
     esc = html.escape(text)
 
-    # 3) URLリンク化（元仕様維持：\1を文字列として使う）
+    # 4) URLリンク化（元仕様維持：\1を文字列として使う）
     esc = URL_RE.sub(r'<a href="\\1" target="_blank" rel="noopener noreferrer">\\1</a>', esc)
 
-    # 4) @everyone / @here を専用色
+    # 5) @everyone / @here を専用色（エスケープ後に置換）
     esc = esc.replace("@everyone", '<span class="mention-ping">@everyone</span>')
     esc = esc.replace("@here", '<span class="mention-ping">@here</span>')
 
-    # 5) @退室済み を専用色
-    esc = esc.replace("@退室済み", '<span class="mention-left">@退室済み</span>')
-
-    # 6) それ以外の @xxx / #xxx は通常メンション色（ただし、上で置換済みのHTMLタグは避ける）
-    #    "<" の直後で始まる @ を触らない簡易対策： (?<!<) を使う
+    # 6) 通常メンション色（@表示名 / @ロール / #チャンネル 等）
+    #    すでに挿入したHTMLタグ内部は触らないように軽く防御（(?<!<)）
     esc = re.sub(r'(?<!<)(?<![\w/])(@[^\s<]+)', r'<span class="mention">\1</span>', esc)
     esc = re.sub(r'(?<!<)(?<![\w/])(#\S+)', r'<span class="mention">\1</span>', esc)
 
     return esc
+
 
 def msg_to_html(m: discord.Message) -> str:
     author = m.author
@@ -222,8 +233,8 @@ def msg_to_html(m: discord.Message) -> str:
 
     attach_html = ""
     if m.attachments:
-        imgs = []
-        files = []
+        imgs: list[str] = []
+        files: list[str] = []
         for a in m.attachments:
             is_img = (a.content_type or "").startswith("image/") or a.filename.lower().endswith(
                 (".png", ".jpg", ".jpeg", ".gif", ".webp")
@@ -254,6 +265,7 @@ def msg_to_html(m: discord.Message) -> str:
     </div>
     """
 
+
 def make_filename(channel_name: str) -> str:
     """
     ダウンロード名を「テキストチャンネル名」にする（チャンネル名＋タイムスタンプ）
@@ -263,6 +275,7 @@ def make_filename(channel_name: str) -> str:
 
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     return f"{safe(channel_name)}__{stamp}.html"
+
 
 class ExportHtmlCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -288,7 +301,7 @@ class ExportHtmlCog(commands.Cog):
         # サイズ超過なら自動で件数を減らす
         current = limit
         while True:
-            msgs = []
+            msgs: list[discord.Message] = []
             async for m in channel.history(limit=current, oldest_first=True):
                 msgs.append(m)
 
@@ -311,6 +324,7 @@ class ExportHtmlCog(commands.Cog):
                 return
 
             current = max(50, current // 2)
+
 
 # ★ これが必須：load_extension で読み込む入口
 async def setup(bot: commands.Bot):
