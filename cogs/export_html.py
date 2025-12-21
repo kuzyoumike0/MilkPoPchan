@@ -21,6 +21,7 @@ TIME_FORMAT = "%Y-%m-%d %H:%M"
 SAFE_MAX_BYTES = 8 * 1024 * 1024 - 200_000  # 8MB未満に収める安全値（Nitro無し想定）
 
 # URLは「URL文字列を表示したまま」クリックできるようにする
+# 末尾の ) ] } などを巻き込みにくい版
 URL_RE = re.compile(r"(https?://[^\s<>()\]\}]+)")
 
 # Discord内部メンション表現
@@ -30,11 +31,12 @@ CHANNEL_MENTION_RE = re.compile(r"<#(\d+)>")
 
 # インライン装飾（コードブロック外で適用）
 BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
-UNDERLINE_RE = re.compile(r"__(.+?)__")        # ★ 追加：アンダーライン
+UNDERLINE_RE = re.compile(r"__(.+?)__")  # ★下線
 STRIKE_RE = re.compile(r"~~(.+?)~~")
-# italic は *text* と _text_（bold/underlineと衝突しないように後段で処理）
+# italic は *text* と _text_（bold/underlineと衝突しないよう後段で処理）
 ITALIC_ASTER_RE = re.compile(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)")
 ITALIC_UNDER_RE = re.compile(r"(?<!_)_(?!_)(.+?)(?<!_)_(?!_)")
+
 
 def make_html_page(guild_name: str, channel_name: str, exported_at: str, messages_html: str) -> str:
     return f"""<!doctype html>
@@ -144,8 +146,8 @@ def make_html_page(guild_name: str, channel_name: str, exported_at: str, message
     font-weight: 800;
   }}
 
-  /* 見出し */
-  .h1 {{ font-size: 20px; font-weight: 900; margin: 8px 0 6px; }}
+  /* 見出し（Discordっぽく大文字見出し感） */
+  .h1 {{ font-size: 20px; font-weight: 900; letter-spacing: .2px; margin: 8px 0 6px; }}
   .h2 {{ font-size: 18px; font-weight: 850; margin: 8px 0 6px; }}
   .h3 {{ font-size: 16px; font-weight: 800; margin: 8px 0 6px; }}
 
@@ -206,6 +208,7 @@ def make_html_page(guild_name: str, channel_name: str, exported_at: str, message
   .reaction img {{
     width: 16px;
     height: 16px;
+    vertical-align: middle;
   }}
   .reaction .count {{
     color: var(--muted);
@@ -227,19 +230,28 @@ def make_html_page(guild_name: str, channel_name: str, exported_at: str, message
 </html>
 """
 
+
 def _display_user(guild: discord.Guild | None, user_id: int) -> str:
+    """在籍ユーザー（オフライン含む）なら @表示名。取れない場合は表示しない（IDは出さない）。"""
     if not guild:
         return ""
     m = guild.get_member(user_id)
     return f"@{m.display_name}" if m else ""
 
+
 def _display_role(guild: discord.Guild | None, role_id: int) -> str:
-    role = guild.get_role(role_id) if guild else None
+    if not guild:
+        return "@ロール"
+    role = guild.get_role(role_id)
     return f"@{role.name}" if role else "@ロール"
 
+
 def _display_channel(guild: discord.Guild | None, channel_id: int) -> str:
-    ch = guild.get_channel(channel_id) if guild else None
+    if not guild:
+        return "#チャンネル"
+    ch = guild.get_channel(channel_id)
     return f"#{ch.name}" if ch else "#チャンネル"
+
 
 def replace_discord_mentions_to_names(raw: str, guild: discord.Guild | None) -> str:
     raw = USER_MENTION_RE.sub(lambda m: _display_user(guild, int(m.group(1))), raw)
@@ -247,13 +259,22 @@ def replace_discord_mentions_to_names(raw: str, guild: discord.Guild | None) -> 
     raw = CHANNEL_MENTION_RE.sub(lambda m: _display_channel(guild, int(m.group(1))), raw)
     return raw
 
+
 def linkify_escaped(escaped_text: str) -> str:
+    # ✅ \1（グループ参照）でURLを「表示」しながらリンク化
     return URL_RE.sub(r'<a href="\1" target="_blank" rel="noopener noreferrer">\1</a>', escaped_text)
 
+
 def apply_inline_formatting(escaped_text: str) -> str:
+    """
+    すでに html.escape 済みの1行テキストに対して、Discordっぽい装飾をHTMLに変換。
+    ※ コードブロック外にしか呼ばれない前提
+    """
+    # @everyone / @here を専用色
     escaped_text = escaped_text.replace("@everyone", '<span class="mention-ping">@everyone</span>')
     escaped_text = escaped_text.replace("@here", '<span class="mention-ping">@here</span>')
 
+    # URLリンク化（装飾より先：URL内の * や _ を触りにくくする）
     escaped_text = linkify_escaped(escaped_text)
 
     # 太字 → 下線 → 打ち消し → 斜体 の順（Discordに近い見え方）
@@ -263,99 +284,169 @@ def apply_inline_formatting(escaped_text: str) -> str:
     escaped_text = ITALIC_ASTER_RE.sub(r"<em>\1</em>", escaped_text)
     escaped_text = ITALIC_UNDER_RE.sub(r"<em>\1</em>", escaped_text)
 
+    # 通常メンション色（@表示名 / @ロール / #チャンネル等）
     escaped_text = re.sub(r'(?<!<)(?<![\w/])(@[^\s<]+)', r'<span class="mention">\1</span>', escaped_text)
     escaped_text = re.sub(r'(?<!<)(?<![\w/])(#\S+)', r'<span class="mention">\1</span>', escaped_text)
 
     return escaped_text
 
+
 def render_discord_markdown(raw_text: str, guild: discord.Guild | None) -> str:
+    """
+    - ``` コードブロック完全再現（pre/code + 言語ラベル任意）
+    - # / ## / ### 見出し（行頭のみ）
+    - 太字/下線/斜体/打ち消し線（コード外）
+    - URLはURL文字列を表示しつつリンク
+    - メンションは表示名化（取れないユーザーは消える）
+    """
     raw_text = replace_discord_mentions_to_names(raw_text, guild)
+
     parts = raw_text.split("```")
     out: list[str] = []
 
     for i, part in enumerate(parts):
-        if i % 2 == 1:
+        is_code = (i % 2 == 1)
+
+        if is_code:
+            # ```lang\ncode... を想定
             lang = ""
             code = part
+
             if "\n" in code:
                 first, rest = code.split("\n", 1)
+                # 言語指定っぽいなら採用（Discordっぽく）
                 if len(first) <= 20 and re.fullmatch(r"[A-Za-z0-9_+\-#.]+", first.strip() or ""):
                     lang = first.strip()
                     code = rest
-            out.append(
-                f'<pre class="codeblock"><code>{html.escape(code)}</code></pre>'
-                f'{f"<div class=\\"lang\\">{html.escape(lang)}</div>" if lang else ""}'
-            )
+
+            code_esc = html.escape(code)
+            lang_html = f'<div class="lang">{html.escape(lang)}</div>' if lang else ""
+
+            # ✅ ここを「ネストf-string」しない（SyntaxError回避）
+            out.append(f'<pre class="codeblock"><code>{code_esc}</code></pre>{lang_html}')
         else:
+            # コード外：行単位で見出し、その他はインライン装飾
             lines = part.splitlines() or [""]
-            rendered: list[str] = []
+            rendered_lines: list[str] = []
+
             for line in lines:
                 if line.startswith("### "):
-                    rendered.append(f'<div class="h3">{html.escape(line[4:])}</div>')
+                    rendered_lines.append(f'<div class="h3">{html.escape(line[4:])}</div>')
                 elif line.startswith("## "):
-                    rendered.append(f'<div class="h2">{html.escape(line[3:])}</div>')
+                    rendered_lines.append(f'<div class="h2">{html.escape(line[3:])}</div>')
                 elif line.startswith("# "):
-                    rendered.append(f'<div class="h1">{html.escape(line[2:])}</div>')
+                    rendered_lines.append(f'<div class="h1">{html.escape(line[2:])}</div>')
                 else:
                     esc = html.escape(line)
-                    rendered.append(apply_inline_formatting(esc))
-            out.append("<br>".join(rendered))
+                    esc = apply_inline_formatting(esc)
+                    rendered_lines.append(esc)
+
+            out.append("<br>".join(rendered_lines))
 
     return "".join(out)
+
 
 def reactions_to_html(message: discord.Message) -> str:
     if not message.reactions:
         return ""
-    pills = []
+
+    pills: list[str] = []
     for r in message.reactions:
         emoji = r.emoji
+
+        # カスタム絵文字なら画像表示
         if isinstance(emoji, discord.PartialEmoji) and emoji.id:
             pills.append(
-                f'<span class="reaction"><img src="{html.escape(str(emoji.url))}">'
+                f'<span class="reaction"><img src="{html.escape(str(emoji.url))}" alt="emoji">'
                 f'<span class="count">{r.count}</span></span>'
             )
         else:
+            # 通常絵文字はテキスト
             pills.append(
                 f'<span class="reaction"><span>{html.escape(str(emoji))}</span>'
                 f'<span class="count">{r.count}</span></span>'
             )
+
     return f'<div class="reactions">{"".join(pills)}</div>'
+
 
 def attachments_to_html(message: discord.Message) -> str:
     if not message.attachments:
         return ""
-    imgs, files = [], []
+
+    imgs: list[str] = []
+    files: list[str] = []
+
     for a in message.attachments:
         is_img = (a.content_type or "").startswith("image/") or a.filename.lower().endswith(
             (".png", ".jpg", ".jpeg", ".gif", ".webp")
         )
         if is_img:
-            imgs.append(f'<a href="{html.escape(a.url)}" target="_blank"><img src="{html.escape(a.url)}"></a>')
+            imgs.append(
+                f'<a href="{html.escape(a.url)}" target="_blank" rel="noopener noreferrer">'
+                f'<img src="{html.escape(a.url)}" alt="{html.escape(a.filename)}"></a>'
+            )
         else:
-            files.append(f'<div class="filelink"><a href="{html.escape(a.url)}" target="_blank">{html.escape(a.filename)}</a></div>')
-    return (f'<div class="attach">{"".join(imgs)}</div>' if imgs else "") + "".join(files)
+            files.append(
+                f'<div class="filelink"><a href="{html.escape(a.url)}" target="_blank" rel="noopener noreferrer">'
+                f'{html.escape(a.filename)}</a></div>'
+            )
+
+    attach_block = ""
+    if imgs:
+        attach_block += '<div class="attach">' + "".join(imgs) + "</div>"
+    if files:
+        attach_block += "".join(files)
+
+    return attach_block
+
 
 def msg_to_html(m: discord.Message) -> str:
+    author = m.author
+    avatar_url = author.display_avatar.url if author.display_avatar else ""
+    author_name = author.display_name
+    time_str = m.created_at.astimezone(JST).strftime(TIME_FORMAT)
+
+    body_html = render_discord_markdown(m.content or "", m.guild)
+    attach_html = attachments_to_html(m)
+    react_html = reactions_to_html(m)
+
     return f"""
     <div class="msg">
-      <img class="avatar" src="{html.escape(m.author.display_avatar.url)}">
+      <img class="avatar" src="{html.escape(avatar_url)}" alt="avatar">
       <div>
         <div class="line1">
-          <span class="author">{html.escape(m.author.display_name)}</span>
-          <span class="time">{m.created_at.astimezone(JST).strftime(TIME_FORMAT)}</span>
+          <span class="author">{html.escape(author_name)}</span>
+          <span class="time">{html.escape(time_str)}</span>
         </div>
-        <div class="content">
-          {render_discord_markdown(m.content or "", m.guild)}
-          {attachments_to_html(m)}
-          {reactions_to_html(m)}
-        </div>
+        <div class="content">{body_html}{attach_html}{react_html}</div>
       </div>
     </div>
     """
 
+
 def make_filename(channel_name: str) -> str:
-    safe = re.sub(r"[^\w\-]+", "_", channel_name)
-    return f"{safe}__{datetime.now(JST).strftime('%Y%m%d_%H%M%S')}.html"
+    def safe(s: str) -> str:
+        return re.sub(r"[^\w\-]+", "_", s)
+
+    stamp = datetime.now(JST).strftime("%Y%m%d_%H%M%S")
+    return f"{safe(channel_name)}__{stamp}.html"
+
+
+def _missing_perms_text(perms: discord.Permissions) -> str:
+    need = []
+    if not perms.view_channel:
+        need.append("View Channel（チャンネルを見る）")
+    if not perms.read_message_history:
+        need.append("Read Message History（履歴を見る）")
+    if not perms.send_messages:
+        need.append("Send Messages（送信）")
+    if not perms.attach_files:
+        need.append("Attach Files（ファイル添付）")
+    if need:
+        return "⚠️ Botに権限が足りません：\n- " + "\n- ".join(need)
+    return ""
+
 
 class ExportHtmlCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -363,34 +454,82 @@ class ExportHtmlCog(commands.Cog):
 
     @commands.command(name="export")
     async def export(self, ctx: commands.Context, limit: int = DEFAULT_LIMIT):
+        """!export [件数]：実行したチャンネルのログをHTMLにして添付で返す"""
         if not isinstance(ctx.channel, discord.TextChannel):
             await ctx.reply("テキストチャンネルで実行してください。")
             return
 
+        channel: discord.TextChannel = ctx.channel
+
+        # 権限チェック
+        me = channel.guild.me
+        if me is None:
+            await ctx.reply("⚠️ Bot自身の情報が取得できませんでした。少し待ってから再実行してください。")
+            return
+
+        perms = channel.permissions_for(me)
+        miss = _missing_perms_text(perms)
+        if miss:
+            await ctx.reply(miss)
+            return
+
+        # 件数整形
         limit = max(1, min(limit, MAX_LIMIT))
 
-        if ctx.guild:
+        # ★オフライン含むメンバーをキャッシュ（詰まり防止でタイムアウト）
+        if ctx.guild is not None:
             try:
-                await asyncio.wait_for(ctx.guild.chunk(cache=True), timeout=5)
+                await asyncio.wait_for(ctx.guild.chunk(cache=True), timeout=5.0)
             except Exception:
                 pass
 
-        msgs = []
-        async for m in ctx.channel.history(limit=limit, oldest_first=True):
-            msgs.append(m)
+        guild_name = ctx.guild.name if ctx.guild else "DM"
+        filename = make_filename(channel.name)
 
-        page = make_html_page(
-            ctx.guild.name if ctx.guild else "DM",
-            ctx.channel.name,
-            datetime.now(JST).strftime("%Y-%m-%d %H:%M:%S"),
-            "\n".join(msg_to_html(m) for m in msgs),
-        )
+        # サイズ超過なら自動で件数を減らす
+        current = limit
+        while True:
+            msgs: list[discord.Message] = []
+            try:
+                async for m in channel.history(limit=current, oldest_first=True):
+                    msgs.append(m)
+            except discord.Forbidden:
+                await ctx.reply("⚠️ メッセージ履歴を読む権限がありません（Read Message History）。")
+                return
+            except discord.HTTPException as e:
+                await ctx.reply(f"⚠️ Discord API エラーで履歴取得に失敗しました：{e}")
+                return
 
-        data = page.encode("utf-8")
-        await ctx.send(
-            "✅ HTMLログを生成しました",
-            file=discord.File(io.BytesIO(data), filename=make_filename(ctx.channel.name)),
-        )
+            messages_html = "\n".join(msg_to_html(m) for m in msgs)
+
+            exported_at = datetime.now(JST).strftime("%Y-%m-%d %H:%M:%S")
+            page = make_html_page(
+                guild_name=guild_name,
+                channel_name=channel.name,
+                exported_at=exported_at,
+                messages_html=messages_html,
+            )
+            data = page.encode("utf-8")
+
+            if len(data) <= SAFE_MAX_BYTES:
+                try:
+                    file = discord.File(fp=io.BytesIO(data), filename=filename)
+                    await ctx.send(f"✅ HTMLログを生成しました（{current}件）", file=file)
+                except discord.Forbidden:
+                    await ctx.reply("⚠️ 送信/添付権限がありません（Send Messages / Attach Files）。")
+                except discord.HTTPException as e:
+                    await ctx.reply(f"⚠️ ファイル送信に失敗しました：{e}")
+                return
+
+            if current <= 50:
+                await ctx.send(
+                    "⚠️ HTMLが大きすぎて添付できません。\n"
+                    "画像/リアクション/コードなどで8MBを超える場合があります。`!export 100` など件数を減らして試してください。"
+                )
+                return
+
+            current = max(50, current // 2)
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(ExportHtmlCog(bot))
