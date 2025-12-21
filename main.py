@@ -1,25 +1,39 @@
-# main.py
 import asyncio
 import discord
 from discord.ext import commands
+
 import config
 
-intents = discord.Intents.default()
-intents.guilds = True
-intents.members = True
-intents.voice_states = True
-intents.message_content = True  # prefixコマンド用
+COG_LIST = [
+    "cogs.export_html",
+    "cogs.setup_channels",  # ★ ファイル名変更に対応
+]
 
-bot = commands.Bot(command_prefix="!", intents=intents)
+def build_intents() -> discord.Intents:
+    intents = discord.Intents.default()
+    intents.message_content = True  # !export / !mkchannel 用
+    return intents
 
-@bot.event
-async def on_ready():
-    print(f"Logged in as: {bot.user} (ID: {bot.user.id})")
+class MyBot(commands.Bot):
+    async def setup_hook(self) -> None:
+        for ext in COG_LIST:
+            await self.load_extension(ext)
 
 async def main():
-    async with bot:
-        await bot.load_extension("cogs.setup_channels")
-        await bot.start(config.TOKEN)
+    if not config.TOKEN:
+        raise RuntimeError("DISCORD_TOKEN が未設定です（Railway Variables を確認）")
+
+    bot = MyBot(
+        command_prefix="!",
+        intents=build_intents(),
+        help_command=None,
+    )
+
+    @bot.event
+    async def on_ready():
+        print(f"Logged in as: {bot.user} (id={bot.user.id})")
+
+    await bot.start(config.TOKEN)
 
 if __name__ == "__main__":
     asyncio.run(main())
