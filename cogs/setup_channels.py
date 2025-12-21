@@ -4,6 +4,7 @@ import html
 import io
 import re
 from datetime import datetime
+from typing import Optional
 
 import discord
 from discord.ext import commands
@@ -11,9 +12,16 @@ from discord.ext import commands
 DEFAULT_LIMIT = 200
 MAX_LIMIT = 5000
 TIME_FORMAT = "%Y-%m-%d %H:%M"
+
+# Discord添付上限対策（無料枠 8MB を想定して安全側）
 SAFE_MAX_BYTES = 8 * 1024 * 1024 - 200_000
 
 URL_RE = re.compile(r"(https?://[^\s]+)")
+
+# Discordメンションの内部表現
+USER_MENTION_RE = re.compile(r"<@!?(\d+)>")
+ROLE_MENTION_RE = re.compile(r"<@&(\d+)>")
+CHANNEL_MENTION_RE = re.compile(r"<#(\d+)>")
 
 def make_html_page(guild_name: str, channel_name: str, exported_at: str, messages_html: str) -> str:
     return f"""<!doctype html>
@@ -31,6 +39,8 @@ def make_html_page(guild_name: str, channel_name: str, exported_at: str, message
     --name: #f2f3f5;
     --border: rgba(255,255,255,.06);
     --link: #00a8fc;
+    --mention-bg: rgba(88,101,242,.18);
+    --mention-fg: #c9d4ff;
   }}
   body {{
     margin: 0;
@@ -83,6 +93,15 @@ def make_html_page(guild_name: str, channel_name: str, exported_at: str, message
   }}
   a {{ color: var(--link); text-decoration: none; }}
   a:hover {{ text-decoration: underline; }}
+
+  .mention {{
+    background: var(--mention-bg);
+    color: var(--mention-fg);
+    padding: 0 6px;
+    border-radius: 6px;
+    font-weight: 600;
+  }}
+
   .attach {{ margin-top: 8px; display: flex; flex-wrap: wrap; gap: 8px; }}
   .attach img {{
     max-width: 360px;
@@ -91,6 +110,7 @@ def make_html_page(guild_name: str, channel_name: str, exported_at: str, message
     border: 1px solid var(--border);
     object-fit: cover;
   }}
+  .filelink {{ margin-top: 6px; }}
 </style>
 </head>
 <body>
@@ -107,9 +127,73 @@ def make_html_page(guild_name: str, channel_name: str, exported_at: str, message
 </html>
 """
 
-def sanitize(text: str) -> str:
+def _display_user(guild: Optional[discord.Guild], user_id: int) -> str:
+    if not guild:
+        return f"@{user_id}"
+    member = guild.get_member(user_id)
+    if member:
+        return f"@{member.display_name}"
+    # キャッシュに無い時はID表示にフォールバック
+    return f"@{user_id}"
+
+def _display_role(guild: Optional[discord.Guild], role_id: int) -> str:
+    if not guild:
+        return f"@role:{role_id}"
+    role = guild.get_role(role_id)
+    if role:
+        return f"@{role.name}"
+    return f"@role:{role_id}"
+
+def _display_channel(guild: Optional[discord.Guild], channel_id: int) -> str:
+    if not guild:
+        return f"#channel:{channel_id}"
+    ch = guild.get_channel(channel_id)
+    if isinstance(ch, (discord.TextChannel, discord.VoiceChannel, discord.CategoryChannel, discord.ForumChannel, discord.StageChannel, discord.Thread)):
+        return f"#{ch.name}"
+    return f"#channel:{channel_id}"
+
+def replace_mentions_to_text(raw: str, guild: Optional[discord.Guild]) -> str:
+    """
+    Discord内部表現のメンションを、人が読めるテキストへ変換する
+      <@123> / <@!123> -> @表示名
+      <@&456> -> @ロール名
+      <#789>  -> #チャンネル名
+    """
+    def repl_user(m: re.Match) -> str:
+        return _display_user(guild, int(m.group(1)))
+
+    def repl_role(m: re.Match) -> str:
+        return _display_role(guild, int(m.group(1)))
+
+    def repl_channel(m: re.Match) -> str:
+        return _display_channel(guild, int(m.group(1)))
+
+    out = USER_MENTION_RE.sub(repl_user, raw)
+    out = ROLE_MENTION_RE.sub(repl_role, out)
+    out = CHANNEL_MENTION_RE.sub(repl_channel, out)
+    return out
+
+def sanitize_to_html(raw: str, guild: Optional[discord.Guild]) -> str:
+    """
+    1) メンションを @名前/#名前 に変換（数字のままにしない）
+    2) HTMLエスケープ
+    3) URLリンク化
+    4) @xxx / #xxx をDiscordっぽくハイライト（軽め）
+    """
+    # 1) 先に人間向け文字列へ
+    text = replace_mentions_to_text(raw, guild)
+
+    # 2) HTMLエスケープ
     esc = html.escape(text)
-    esc = URL_RE.sub(r'<a href="\\1" target="_blank" rel="noopener noreferrer">\\1</a>', esc)
+
+    # 3) URLリンク化
+    esc = URL_RE.sub(r'<a href="\1" target="_blank" rel="noopener noreferrer">\1</a>', esc)
+
+    # 4) それっぽいメンション装飾（@ と # の先頭単語をハイライト）
+    #    すでにURL化された中身は壊したくないので、簡易的にURLタグの外側だけを想定した軽い装飾にしてます。
+    esc = re.sub(r'(?<![\w/])(@[^\s<]+)', r'<span class="mention">\1</span>', esc)
+    esc = re.sub(r'(?<![\w/])(#\S+)', r'<span class="mention">\1</span>', esc)
+
     return esc
 
 def msg_to_html(m: discord.Message) -> str:
@@ -118,28 +202,29 @@ def msg_to_html(m: discord.Message) -> str:
     author_name = author.display_name
     time_str = m.created_at.astimezone().strftime(TIME_FORMAT)
 
-    content = sanitize(m.content or "")
+    content = sanitize_to_html(m.content or "", m.guild)
+
+    # 添付（画像はサムネ、その他はリンク）
+    attach_imgs = []
+    attach_files = []
+    for a in m.attachments:
+        is_img = (a.content_type or "").startswith("image/") or a.filename.lower().endswith(
+            (".png", ".jpg", ".jpeg", ".gif", ".webp")
+        )
+        if is_img:
+            attach_imgs.append(
+                f'<a href="{html.escape(a.url)}" target="_blank" rel="noopener noreferrer">'
+                f'<img src="{html.escape(a.url)}" alt="{html.escape(a.filename)}"></a>'
+            )
+        else:
+            attach_files.append(
+                f'<div class="filelink"><a href="{html.escape(a.url)}" target="_blank" rel="noopener noreferrer">'
+                f'{html.escape(a.filename)}</a></div>'
+            )
 
     attach_html = ""
-    if m.attachments:
-        imgs = []
-        files = []
-        for a in m.attachments:
-            is_img = (a.content_type or "").startswith("image/") or a.filename.lower().endswith(
-                (".png", ".jpg", ".jpeg", ".gif", ".webp")
-            )
-            if is_img:
-                imgs.append(
-                    f'<a href="{html.escape(a.url)}" target="_blank" rel="noopener noreferrer">'
-                    f'<img src="{html.escape(a.url)}" alt="{html.escape(a.filename)}"></a>'
-                )
-            else:
-                files.append(
-                    f'<div><a href="{html.escape(a.url)}" target="_blank" rel="noopener noreferrer">'
-                    f'{html.escape(a.filename)}</a></div>'
-                )
-        if imgs or files:
-            attach_html = '<div class="attach">' + "".join(imgs) + "</div>" + "".join(files)
+    if attach_imgs or attach_files:
+        attach_html = '<div class="attach">' + "".join(attach_imgs) + "</div>" + "".join(attach_files)
 
     return f"""
     <div class="msg">
@@ -191,24 +276,21 @@ class ExportHtmlCog(commands.Cog):
         limit = DEFAULT_LIMIT
         target: discord.TextChannel | None = None
 
-        # 1つ目が None
         if limit_or_channel is None:
             target = ctx.channel if isinstance(ctx.channel, discord.TextChannel) else None
-
         else:
-            # 1つ目が数値っぽいなら limit
             if limit_or_channel.isdigit():
                 limit = int(limit_or_channel)
                 target = channel if channel else (ctx.channel if isinstance(ctx.channel, discord.TextChannel) else None)
             else:
-                # 1つ目がチャンネル指定（#xxx がパースできない場合もあるのでフォールバック）
-                target = channel  # commandsが解釈できた場合
+                # 1つ目がチャンネル指定
+                target = channel
                 if target is None:
-                    # 文字列からチャンネルIDを拾う（<#123> 形式）
                     m = re.match(r"<#(\d+)>", limit_or_channel)
                     if m and ctx.guild:
-                        target = ctx.guild.get_channel(int(m.group(1)))
-
+                        ch = ctx.guild.get_channel(int(m.group(1)))
+                        if isinstance(ch, discord.TextChannel):
+                            target = ch
                 if target is None:
                     target = ctx.channel if isinstance(ctx.channel, discord.TextChannel) else None
 
@@ -231,13 +313,13 @@ class ExportHtmlCog(commands.Cog):
             await ctx.reply("⚠️ Botに Attach Files（ファイル添付）の権限がありません。HTMLを添付できません。")
             return
 
-        # ---- HTML生成 ----
         guild_name = ctx.guild.name if ctx.guild else "DM"
         filename = make_filename(guild_name, target.name)
 
+        # ---- HTML生成（サイズ超過なら件数を減らす）----
         current = limit
         while True:
-            msgs = []
+            msgs: list[discord.Message] = []
             try:
                 async for m in target.history(limit=current, oldest_first=True):
                     msgs.append(m)
@@ -265,5 +347,6 @@ class ExportHtmlCog(commands.Cog):
 
             current = max(50, current // 2)
 
+# load_extension の入口（必須）
 async def setup(bot: commands.Bot):
     await bot.add_cog(ExportHtmlCog(bot))
