@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import html
 import io
 import re
@@ -38,9 +39,11 @@ def make_html_page(guild_name: str, channel_name: str, exported_at: str, message
     --border: rgba(255,255,255,.06);
     --link: #00a8fc;
 
+    /* 通常メンション */
     --mention-bg: rgba(88,101,242,.18);
     --mention-fg: #c9d4ff;
 
+    /* @everyone/@here 専用 */
     --ping-bg: rgba(250,166,26,.20);
     --ping-fg: #ffd59a;
   }}
@@ -116,6 +119,7 @@ def make_html_page(guild_name: str, channel_name: str, exported_at: str, message
     object-fit: cover;
   }}
 
+  /* 通常メンション（@表示名 / #チャンネル / @ロールなど） */
   .mention {{
     background: var(--mention-bg);
     color: var(--mention-fg);
@@ -124,6 +128,7 @@ def make_html_page(guild_name: str, channel_name: str, exported_at: str, message
     font-weight: 600;
   }}
 
+  /* @everyone / @here 専用 */
   .mention-ping {{
     background: var(--ping-bg);
     color: var(--ping-fg);
@@ -150,13 +155,17 @@ def make_html_page(guild_name: str, channel_name: str, exported_at: str, message
 
 def _display_user(guild: discord.Guild | None, user_id: int) -> str:
     """
-    在籍ユーザーのみ @表示名 に変換。取得できなければ（退室済み等）表示しない。
+    <@id> / <@!id> を @表示名 に変換。
+    サーバー内にいればオフラインでも表示名にする（guild.chunk後は get_member で取れる想定）。
+    取れない場合は「表示しない」（空文字）。IDは出さない。
     """
     if not guild:
         return ""
+
     member = guild.get_member(user_id)
     if member:
         return f"@{member.display_name}"
+
     return ""
 
 
@@ -182,21 +191,23 @@ def replace_discord_mentions_to_names(raw: str, guild: discord.Guild | None) -> 
 
 
 def sanitize(text: str, guild: discord.Guild | None) -> str:
+    # 1) Discord内部メンションを表示名へ（取れないユーザーは空文字）
     text = replace_discord_mentions_to_names(text, guild)
 
-    # 連続スペースのみ軽く整形（空文字化で崩れた見た目対策）
+    # 2) 連続スペースだけ軽く詰める（空文字化で崩れた時の見た目対策）
     text = re.sub(r"[ \t]{2,}", " ", text)
 
+    # 3) HTMLエスケープ
     esc = html.escape(text)
 
-    # URLリンク化（あなたの元仕様に合わせて \1 形式）
+    # 4) URLリンク化（元仕様維持：\1を文字列として使う）
     esc = URL_RE.sub(r'<a href="\\1" target="_blank" rel="noopener noreferrer">\\1</a>', esc)
 
-    # @everyone / @here を専用色
+    # 5) @everyone / @here を専用色
     esc = esc.replace("@everyone", '<span class="mention-ping">@everyone</span>')
     esc = esc.replace("@here", '<span class="mention-ping">@here</span>')
 
-    # 通常メンション色（すでに挿入したHTMLタグ内部は触らないように軽く防御）
+    # 6) 通常メンション色（@表示名 / @ロール / #チャンネル 等）
     esc = re.sub(r'(?<!<)(?<![\w/])(@[^\s<]+)', r'<span class="mention">\1</span>', esc)
     esc = re.sub(r'(?<!<)(?<![\w/])(#\S+)', r'<span class="mention">\1</span>', esc)
 
@@ -282,7 +293,7 @@ class ExportHtmlCog(commands.Cog):
 
         channel: discord.TextChannel = ctx.channel
 
-        # 権限チェック（ここがないと「DLできない」が黙って起きやすい）
+        # 権限チェック
         me = channel.guild.me
         if me is None:
             await ctx.reply("⚠️ Bot自身の情報が取得できませんでした。少し待ってから再実行してください。")
@@ -299,20 +310,18 @@ class ExportHtmlCog(commands.Cog):
         if limit > MAX_LIMIT:
             limit = MAX_LIMIT
 
-        # オフラインも含めたい場合：members intent が有効なら chunk が効く
+        # ★重要：オフライン含むメンバーをキャッシュへ（Members Intent が有効な場合に効く）
+        # ただし chunk が詰まると「何も返ってこない」のでタイムアウトを付けて必ず続行する
         if ctx.guild is not None:
             try:
-                await ctx.guild.chunk(cache=True)
-            except discord.Forbidden:
-                # chunk不可でも export 自体は継続
-                pass
+                await asyncio.wait_for(ctx.guild.chunk(cache=True), timeout=5.0)
             except Exception:
-                # ここで落とさない
                 pass
 
         guild_name = ctx.guild.name if ctx.guild else "DM"
         filename = make_filename(channel.name)
 
+        # サイズ超過なら自動で件数を減らす
         current = limit
         while True:
             msgs: list[discord.Message] = []
@@ -340,7 +349,7 @@ class ExportHtmlCog(commands.Cog):
                     file = discord.File(fp=io.BytesIO(data), filename=filename)
                     await ctx.send(f"✅ HTMLログを生成しました（{current}件）", file=file)
                 except discord.Forbidden:
-                    await ctx.reply("⚠️ ファイル添付または送信権限がありません（Attach Files / Send Messages）。")
+                    await ctx.reply("⚠️ 送信/添付権限がありません（Send Messages / Attach Files）。")
                 except discord.HTTPException as e:
                     await ctx.reply(f"⚠️ ファイル送信に失敗しました：{e}")
                 return
