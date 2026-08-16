@@ -98,6 +98,7 @@ class SetupView(discord.ui.View):
 
         self.add_item(SharedCreateButton(cog, 3, row=2))
         self.add_item(IndividualCreateButton(cog, 3, row=2))
+        
         self.add_item(SharedCreateButton(cog, 4, row=3))
         self.add_item(IndividualCreateButton(cog, 4, row=3))
 
