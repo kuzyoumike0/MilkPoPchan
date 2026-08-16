@@ -7,6 +7,7 @@ import config
 COG_LIST = [
     "cogs.export_html",
     "cogs.setup_channels",
+    "cogs.version_info",
 ]
 
 def build_intents() -> discord.Intents:
