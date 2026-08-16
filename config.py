@@ -29,3 +29,8 @@ SESSION_INDIVIDUAL_CATEGORY_IDS = {
     3: 1452111331938402359,
     4: 1480575973148590141,
 }
+# ===== version_info.py（最終更新日表示）=====
+# GitHub照会を使う場合は "ユーザー名/リポジトリ名" を設定。None なら照会しない
+GITHUB_REPO = None          # 例: "yourname/MilkPoPchan"
+GITHUB_BRANCH = "main"      # None ならデフォルトブランチ
+VERSION_ADMIN_ONLY = False  # True で管理者のみ実行可
